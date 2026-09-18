@@ -9,12 +9,17 @@ import (
 	"time"
 )
 
-// RunFullSuite runs `go test -json -count=1 ./...` in repoDir and parses the
-// test2json stream into per-package results. A non-zero exit is data (test
-// failures), not an error; an error is returned only when the stream yields
-// no package events at all.
-func RunFullSuite(ctx context.Context, repoDir string, extraArgs []string) (map[string]PackageResult, error) {
-	args := append([]string{"test", "-json", "-count=1", "./..."}, extraArgs...)
+// RunFullSuite runs `go test -json -count=1` over the explicit package list
+// pkgs in repoDir and parses the test2json stream into per-package results.
+// A non-zero exit is data (test failures), not an error; an error is
+// returned only when the stream yields no package events at all.
+func RunFullSuite(ctx context.Context, repoDir string, pkgs []string, timeout time.Duration, extraArgs []string) (map[string]PackageResult, error) {
+	args := []string{"test", "-json", "-count=1"}
+	if timeout > 0 {
+		args = append(args, "-timeout", timeout.String())
+	}
+	args = append(args, pkgs...)
+	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = repoDir
 	out, err := cmd.Output()

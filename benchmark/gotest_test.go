@@ -49,7 +49,7 @@ func TestSummarizeAndCompute(t *testing.T) {
 		t.Fatalf("full: %+v", full)
 	}
 	sel := Selection{Strategy: "static", Selected: []string{"example.com/b"}, TargetsTotal: 2}
-	m := Compute(sel, full, res)
+	m := Compute(sel, full, HeadOracle(full), res)
 	if m.Selected != 1 || m.ReductionPercent != 50 {
 		t.Fatalf("m: %+v", m)
 	}

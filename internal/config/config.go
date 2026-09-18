@@ -107,7 +107,8 @@ func Default() Config {
 				".editorconfig", ".golangci.yml", ".golangci.yaml",
 				".goreleaser.yml", ".goreleaser.yaml",
 				".pre-commit-config.yaml", "Makefile", "Makefile.*",
-				"VERSION", ".jevci.yaml",
+				"VERSION", "OWNERS", "**/OWNERS", "OWNERS_ALIASES",
+				"SECURITY_CONTACTS", "keps/**", "CHANGELOG/**", ".jevci.yaml",
 			},
 		},
 	}

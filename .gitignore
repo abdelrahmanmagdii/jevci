@@ -3,4 +3,4 @@
 *.test
 dist/
 .bench/
-benchmark/results/*.jsonl
+benchmark/results/*.log

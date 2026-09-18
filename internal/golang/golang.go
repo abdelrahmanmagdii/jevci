@@ -145,20 +145,25 @@ func (w *Workspace) ImportPath(rel string) string {
 	return w.ModulePath + "/" + strings.TrimPrefix(rel, "./")
 }
 
-// PackageForFile maps a repo-relative file path to the package containing it.
-// Files under a testdata segment are attributed to the nearest ancestor
-// package directory.
+// PackageForFile maps a repo-relative file path to the package containing
+// it. A non-Go file whose own directory has no package is attributed to the
+// nearest ancestor package directory (up to the repo root); .go files are
+// never walked up — a .go file outside any package is unattributed.
 func (w *Workspace) PackageForFile(relPath string) (*Package, bool) {
 	dir := filepath.Dir(filepath.Join(w.Root, relPath))
 	if p, ok := w.byDir[dir]; ok {
 		return p, true
 	}
-	if strings.Contains(filepath.ToSlash(relPath), "testdata/") || strings.HasPrefix(filepath.ToSlash(relPath), "testdata/") {
-		for dir != w.Root && dir != "/" && dir != "." {
-			dir = filepath.Dir(dir)
-			if p, ok := w.byDir[dir]; ok {
-				return p, true
-			}
+	if strings.HasSuffix(relPath, ".go") {
+		return nil, false
+	}
+	for dir != w.Root {
+		dir = filepath.Dir(dir)
+		if p, ok := w.byDir[dir]; ok {
+			return p, true
+		}
+		if dir == "/" || dir == "." {
+			break
 		}
 	}
 	return nil, false

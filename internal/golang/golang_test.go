@@ -1,11 +1,37 @@
 package golang
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/abdelrahmanmagdii/jevci/internal/gitdiff"
 )
+
+func TestPackageForFile(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string) *Package {
+		return &Package{ImportPath: "m/" + rel, Dir: filepath.Join(root, rel)}
+	}
+	ws := &Workspace{Root: root, ModulePath: "m", Packages: map[string]*Package{}, byDir: map[string]*Package{}}
+	pCompat := mk("test/compat")
+	pRoot := &Package{ImportPath: "m", Dir: root}
+	ws.byDir[pCompat.Dir] = pCompat
+
+	if p, ok := ws.PackageForFile("test/compat/reference/x.yaml"); !ok || p != pCompat {
+		t.Fatalf("yaml under package dir subtree: %v %v", p, ok)
+	}
+	if _, ok := ws.PackageForFile("charts/x/values.yaml"); ok {
+		t.Fatal("charts file should be unattributed without root package")
+	}
+	ws.byDir[root] = pRoot
+	if p, ok := ws.PackageForFile("charts/x/values.yaml"); !ok || p != pRoot {
+		t.Fatal("charts file should attribute to root package")
+	}
+	if _, ok := ws.PackageForFile("test/compat/reference/x.go"); ok {
+		t.Fatal(".go file must not walk up to ancestor package")
+	}
+}
 
 const symbolSrc = `// Package p does things.
 package p

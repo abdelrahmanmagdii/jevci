@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"text/tabwriter"
@@ -19,16 +20,26 @@ func WriteMarkdown(w io.Writer, records []Record) {
 	}
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "PR\tstrategy\tselected/total\treduction %\trecall")
+	fmt.Fprintln(tw, "PR\toracle failed\tstrategy\tselected/total\treduction %\truntime red. %\tdetected/missed\trecall\tJev ms\tJev $")
 	for _, r := range records {
 		for _, sm := range r.Strategies {
 			recall := "n/a"
 			if sm.Recall != nil {
 				recall = fmt.Sprintf("%.2f", *sm.Recall)
 			}
-			fmt.Fprintf(tw, "%d\t%s\t%d/%d\t%.1f\t%s\n",
-				r.PR, sm.Strategy, sm.Selected, sm.TargetsTotal, sm.ReductionPercent, recall)
+			fmt.Fprintf(tw, "%d\t%d\t%s\t%d/%d\t%.1f\t%.1f\t%d/%d\t%s\t%d\t%.4f\n",
+				r.PR, len(r.Oracle.Failed), sm.Strategy, sm.Selected, sm.TargetsTotal,
+				sm.ReductionPercent, sm.RuntimeReductionPercent,
+				len(sm.FailedDetected), len(sm.FailedMissed), recall,
+				sm.JevLatencyMS, sm.JevCostUSD)
 		}
 	}
 	tw.Flush()
+}
+
+// WriteAggregateJSON dumps the Aggregate output as JSON.
+func WriteAggregateJSON(w io.Writer, records []Record) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(Aggregate(records))
 }

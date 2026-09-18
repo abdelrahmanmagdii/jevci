@@ -44,6 +44,74 @@ type FullSuite struct {
 	RuntimeMS int64    `json:"runtime_ms"`
 }
 
+// Oracle is the ground-truth impact set for a PR: the packages whose tests
+// fail because of the PR's source change. Method "revert" restores the
+// PR's non-test source files to base while keeping its tests, runs the
+// suite, and takes the failures that do not also fail at head. Method
+// "head_failures" is the fallback: packages failing at head.
+type Oracle struct {
+	Ran       bool     `json:"ran"`
+	Method    string   `json:"method"`
+	Failed    []string `json:"failed"`
+	Noise     []string `json:"noise,omitempty"` // failing at head too; excluded from Failed
+	RuntimeMS int64    `json:"runtime_ms"`
+}
+
+// RevertOracle derives the impact set from a revert run and the head run.
+// Only packages that had tests at head (non-skipped head result) can be in
+// the impact set: a package the PR added has no base version, and a package
+// without tests cannot be "missed".
+func RevertOracle(revert, head map[string]PackageResult) Oracle {
+	o := Oracle{Ran: true, Method: "revert", Failed: []string{}}
+	for ip, r := range revert {
+		if r.Skipped || r.Passed {
+			continue
+		}
+		h, ok := head[ip]
+		if !ok || h.Skipped {
+			continue
+		}
+		o.RuntimeMS += r.Elapsed.Milliseconds()
+		if !h.Passed {
+			o.Noise = append(o.Noise, ip)
+			continue
+		}
+		o.Failed = append(o.Failed, ip)
+	}
+	sort.Strings(o.Failed)
+	sort.Strings(o.Noise)
+	return o
+}
+
+// HeadOracle is the fallback ground truth: packages failing at head.
+func HeadOracle(full FullSuite) Oracle {
+	return Oracle{Ran: full.Ran, Method: "head_failures", Failed: append([]string{}, full.Failed...)}
+}
+
+// RestrictToTested narrows a selection to the packages the suite actually
+// ran (non-skipped results), so reduction is measured over the tested
+// universe rather than over every discovered test package.
+func RestrictToTested(sel Selection, results map[string]PackageResult) Selection {
+	if results == nil {
+		return sel
+	}
+	out := sel
+	out.Selected = []string{}
+	out.TargetsTotal = 0
+	for _, r := range results {
+		if !r.Skipped {
+			out.TargetsTotal++
+		}
+	}
+	for _, ip := range sel.Selected {
+		if r, ok := results[ip]; ok && !r.Skipped {
+			out.Selected = append(out.Selected, ip)
+		}
+	}
+	sort.Strings(out.Selected)
+	return out
+}
+
 // StrategyMetrics are the per-PR numbers for one strategy.
 type StrategyMetrics struct {
 	Strategy                string   `json:"strategy"`
@@ -54,7 +122,7 @@ type StrategyMetrics struct {
 	RuntimeReductionPercent float64  `json:"runtime_reduction_percent"`
 	FailedDetected          []string `json:"failed_detected"`
 	FailedMissed            []string `json:"failed_missed"`
-	Recall                  *float64 `json:"recall"` // nil when the full suite had no failures
+	Recall                  *float64 `json:"recall"` // nil when the oracle had no failures
 	PlanMS                  int64    `json:"plan_ms"`
 	JevLatencyMS            int64    `json:"jev_latency_ms"`
 	JevInputTokens          int      `json:"jev_input_tokens"`
@@ -71,6 +139,7 @@ type Record struct {
 	Base       string            `json:"base"`
 	Head       string            `json:"head"`
 	FullSuite  FullSuite         `json:"full_suite"`
+	Oracle     Oracle            `json:"oracle"`
 	Strategies []StrategyMetrics `json:"strategies"`
 	Error      string            `json:"error,omitempty"`
 }
@@ -93,10 +162,11 @@ func SummarizeFullSuite(results map[string]PackageResult) FullSuite {
 	return fs
 }
 
-// Compute turns a selection plus the full-suite results into metrics.
-// results may be nil when the suite was not run; runtime and recall fields
-// are then left at zero/nil.
-func Compute(sel Selection, full FullSuite, results map[string]PackageResult) StrategyMetrics {
+// Compute turns a selection plus the full-suite results and the oracle into
+// metrics. results may be nil when the suite was not run; runtime and
+// recall fields are then left at zero/nil. Recall is measured against
+// oracle.Failed.
+func Compute(sel Selection, full FullSuite, oracle Oracle, results map[string]PackageResult) StrategyMetrics {
 	m := StrategyMetrics{
 		Strategy: sel.Strategy, TargetsTotal: sel.TargetsTotal, Selected: len(sel.Selected),
 		PlanMS: sel.PlanMS, JevLatencyMS: sel.JevLatencyMS, JevInputTokens: sel.JevInputTokens,
@@ -120,15 +190,18 @@ func Compute(sel Selection, full FullSuite, results map[string]PackageResult) St
 	if full.RuntimeMS > 0 {
 		m.RuntimeReductionPercent = round1((1 - float64(m.SelectedRuntimeMS)/float64(full.RuntimeMS)) * 100)
 	}
-	for _, ip := range full.Failed {
+	if !oracle.Ran {
+		return m
+	}
+	for _, ip := range oracle.Failed {
 		if selected[ip] {
 			m.FailedDetected = append(m.FailedDetected, ip)
 		} else {
 			m.FailedMissed = append(m.FailedMissed, ip)
 		}
 	}
-	if len(full.Failed) > 0 {
-		r := float64(len(m.FailedDetected)) / float64(len(full.Failed))
+	if len(oracle.Failed) > 0 {
+		r := float64(len(m.FailedDetected)) / float64(len(oracle.Failed))
 		m.Recall = &r
 	}
 	return m
@@ -185,7 +258,7 @@ func Aggregate(records []Record) []StrategySummary {
 			a.s.TotalJevCostUSD += sm.JevCostUSD
 			a.s.FailedDetected += len(sm.FailedDetected)
 			a.s.FailedMissed += len(sm.FailedMissed)
-			if len(rec.FullSuite.Failed) > 0 {
+			if len(rec.Oracle.Failed) > 0 {
 				a.s.PRsWithFailures++
 			}
 		}

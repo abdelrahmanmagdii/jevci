@@ -45,10 +45,12 @@ func runBench(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	suitePath := fs.String("suite", "", "suite YAML file (required)")
 	outPath := fs.String("out", "", "results JSONL path (required)")
-	noTests := fs.Bool("no-tests", false, "plan only; do not run go test")
+	noTests := fs.Bool("no-tests", false, "plan only; do not run go test or the oracle")
 	strategies := fs.String("strategies", "", "comma-separated strategy override")
-	cfgPath := fs.String("config", ".jevci.yaml", "config file")
-	timeout := fs.Duration("timeout", 60*time.Minute, "overall timeout")
+	limit := fs.Int("limit", 0, "only the first N PRs")
+	only := fs.String("only", "", "comma-separated PR numbers to run")
+	cfgPath := fs.String("config", "", "config file (default: suite config or .jevci.yaml)")
+	timeout := fs.Duration("timeout", 24*time.Hour, "overall timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -64,11 +66,37 @@ func runBench(args []string) int {
 	}
 	if *noTests {
 		suite.RunTests = false
+		suite.Oracle = "head"
 	}
 	if *strategies != "" {
 		suite.Strategies = strings.Split(*strategies, ",")
 	}
-	cfg, err := config.Load(*cfgPath)
+	if *only != "" {
+		want := map[int]bool{}
+		for _, s := range strings.Split(*only, ",") {
+			var n int
+			fmt.Sscanf(s, "%d", &n)
+			want[n] = true
+		}
+		var prs []benchmark.PRSpec
+		for _, p := range suite.PRs {
+			if want[p.Number] {
+				prs = append(prs, p)
+			}
+		}
+		suite.PRs = prs
+	}
+	if *limit > 0 && len(suite.PRs) > *limit {
+		suite.PRs = suite.PRs[:*limit]
+	}
+	cfgFile := *cfgPath
+	if cfgFile == "" {
+		cfgFile = suite.Config
+	}
+	if cfgFile == "" {
+		cfgFile = ".jevci.yaml"
+	}
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -119,6 +147,7 @@ func runReport(args []string) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	in := fs.String("in", "", "results JSONL (required)")
 	md := fs.String("md", "", "write markdown report to this file (default stdout)")
+	asJSON := fs.Bool("json", false, "dump the aggregate summary as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -131,6 +160,13 @@ func runReport(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	if *asJSON {
+		if err := benchmark.WriteAggregateJSON(os.Stdout, records); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		return 0
 	}
 	var w *os.File
 	if *md != "" {

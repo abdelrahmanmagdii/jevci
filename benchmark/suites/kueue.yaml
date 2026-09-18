@@ -1,0 +1,61 @@
+# Kueue benchmark suite: 12 merged PRs, revert oracle, 5 strategies.
+# The tested universe mirrors kueue's `make test`:
+#   go list ./... | grep -v '/test/'
+repo: github.com/kubernetes-sigs/kueue
+workdir: .bench/kueue
+packages: ["./..."]
+exclude_package_regex: "/test/"
+run_tests: true
+oracle: revert
+test_timeout: 40m
+strategies: [full, changed, static, jevci, jevci:no-direct]
+config: kueue.jevci.yaml
+prs:
+  - number: 15641
+    head: c24fee8255cc441fa1712d775365d55de123b082
+    base: 02587ad4811ff68070381207ec684987d219ad38
+    title: "Use the Deployment UID for the job-uid label on Deployment Workloads"
+  - number: 15776
+    head: 77cb3e1abc45b820f44655124cd7aaaf7b0e2dd1
+    base: 0ecf28555848b318fb940ce51e3a0f38590218c2
+    title: "Adjust podsetReducer and related tests"
+  - number: 15456
+    head: 8e26a991500edeb70c69de58669f195b5624fb6d
+    base: 61221c7ad0a0900bd23d9c4ae3067d2c34473435
+    title: "Carry merged tolerations and nodeSelector into the scheduler-library pod"
+  - number: 15773
+    head: 61221c7ad0a0900bd23d9c4ae3067d2c34473435
+    base: 09ae286b6b5512a1a3f27382ff0f7ede8eab25d6
+    title: "TrainJob: Add Clone() to RuntimePatchWrapper"
+  - number: 15649
+    head: 09ae286b6b5512a1a3f27382ff0f7ede8eab25d6
+    base: 69f376bbfc0b509efdd0e65cfbce924a58f631ff
+    title: "Record the SparkApplication-level node selector in the Workload PodSets"
+  - number: 15689
+    head: 463c992bcac47e0b673157e8f3252bbe4d103b49
+    base: 236d6e72d37931c0464d428834a528370c4d51e8
+    title: "TAS: cache the leader's feasible leaves with the workers'"
+  - number: 15651
+    head: 9c6b7f334a5148690b8272cd7b61f7de1cefbf74
+    base: 3cdc70e95dbb76ea88cd31bac1c401fc25655f85
+    title: "Remove the preempted Workloads' Pods from the simulator when recomputing"
+  - number: 15652
+    head: ebf469a449fdeef5f0d965839b78bab8829976c0
+    base: 126f5de725d9c42e7a8087c374c36a3a40111ad7
+    title: "TrainJob: Make Stop idempotent across reconciles"
+  - number: 15288
+    head: 50b1187794014cec3b9c9aed2c275fc65e54310b
+    base: a43389621666cd087592886a1f5d6d866280c240
+    title: "Add multikueue_workloads_evicted_total metric"
+  - number: 15284
+    head: c66797397c6b27e478b04d9bc2f582c16258728e
+    base: c409ac66802214ae036b52f0c172a6c173ccb1ee
+    title: "Store effective resources in workload.Info and migrate consumers"
+  - number: 15026
+    head: 271dac5b6efd87ad64bf486542a9671036fe4fca
+    base: 8e6c6dee5e63b652ab151c8b9b3e04c7589bf35c
+    title: "Keep internal resource amounts exact past the int64 boundary"
+  - number: 15661
+    head: 23ae92124230b4b1335f1257bd9492335f398973
+    base: 702a7c4d2080b68ca22f8e56b8100d475f5a9feb
+    title: "Drain evicted elastic slices before releasing quota"

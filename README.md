@@ -6,7 +6,7 @@ Given `base..head`, JevCI computes which Go test packages to run. It applies det
 
 ## Status
 
-v0.1. Go repositories only. Benchmark numbers are not yet published.
+v0.1. Go repositories only. The first benchmark (kubernetes-sigs/kueue, 12 PRs) is published below; its recall column is not yet discriminating.
 
 ## How it works
 
@@ -226,17 +226,43 @@ Jev scores only the non-obvious candidates: transitive dependents by default, or
 
 ## Benchmark methodology
 
-For each historical PR: check out head, compute base via merge-base, plan all four strategies (`full`, `changed`, `static`, `jevci`), and run the full suite once at head with `go test -json` to get per-package results and durations.
+For each historical PR: check out head, compute base via merge-base, plan every strategy, and run the suite with `go test -json` to get per-package results and durations.
 
-Metrics per strategy (`benchmark/metrics.go`): targets total, selected, reduction %, selected-suite runtime (the serial sum of selected package durations), runtime reduction %, failed detected/missed, recall, plan time, Jev latency, Jev tokens and cost. Recall is `failed_detected / failed_total` for packages that failed at head.
+The tested universe is configurable per suite: `packages` gives `go list` patterns (default `["./..."]`) and `exclude_package_regex` filters the resolved list. Kueue's suite uses `exclude_package_regex: "/test/"`, which mirrors its own `make test`. Selections are restricted to the tested universe before metrics are computed.
 
-Caveat: green merged PRs produce zero failures, so recall needs the revert oracle. Revert the PR's non-test source files onto head, keep its tests, and treat the packages that then fail as the true impact set. This is the next step.
+Strategies: `full`, `changed`, `static`, `jevci`, and `jevci:no-direct`. The last variant is `jevci` with `always_run_direct_dependents: false`, so Jev also scores direct dependents.
 
-**Benchmark results coming soon.** Target metrics: mean test-target reduction %, mean runtime reduction %, recall (detected/total failures), mean Jev latency, total Jev cost per PR, and error rate — per strategy, aggregated across the suite.
+Ground truth comes from the revert oracle (`oracle: revert`): the PR's non-test source files are restored to base (`_test.go`, `vendor/`, and `testdata/` excluded), the suite runs again, and packages that fail on revert but pass at head form the impact set. Failures that also fail at head are noise and are subtracted. `oracle: head` is the fallback: packages failing at head.
+
+Metrics per strategy (`benchmark/metrics.go`): targets total, selected, reduction %, selected-suite runtime (the serial sum of selected package durations), runtime reduction %, failed detected/missed, recall against the oracle's impact set, plan time, Jev latency, Jev tokens and cost.
+
+## Benchmark results: kubernetes-sigs/kueue, 12 PRs (2026-09-18)
+
+**On this suite Jev cut the selected unit-test set from 60% (static) to 79% reduction with no recall loss, but the oracle found zero cross-package regressions, so recall does not yet separate the strategies.**
+
+Setup: 12 merged PRs (`benchmark/suites/kueue.yaml`), unit-test universe of 113 packages (`go list ./... | grep -v /test/`, kueue's own `make test` set), revert oracle, model `jev-1.13.0`. Full unit suite: 359 s serial mean per PR. Raw data: `benchmark/results/kueue-2026-09-18.jsonl`; rendered report: `benchmark/results/kueue-2026-09-18.md`.
+
+| Strategy | Mean target reduction | Mean runtime reduction | Oracle failures detected / total | Recall | Mean Jev latency per PR | Jev cost, 12 PRs |
+|---|---|---|---|---|---|---|
+| full | 0.0% | 0.0% | 24 / 24 | 1.00 | – | – |
+| changed | 97.9% | 93.6% | 24 / 24 | 1.00 | – | – |
+| static | 60.0% | 48.2% | 24 / 24 | 1.00 | – | – |
+| jevci | 78.7% | 67.1% | 24 / 24 | 1.00 | 3.5 s | $0.034 |
+| jevci:no-direct | 87.0% | 77.3% | 24 / 24 | 1.00 | 3.2 s | $0.066 |
+
+What the numbers say:
+
+- Jev adds 18.7 points of target reduction and 18.9 points of runtime reduction over static dependency selection, at about $0.003 per PR and 3.5 s of planning time (807k input tokens over 12 PRs).
+- Every one of the 24 oracle failures sits inside a package the PR itself changed. No PR produced a cross-package unit-test failure when its source was reverted. That is why `changed` also scores 1.00: on this suite the oracle cannot tell a safe pruner from a reckless one.
+- Jev never returned a probability ≥ 0.70 on this repository. Transitive candidates scored 0.05–0.50, so every Jev decision was `SKIP` or `RUN PACKAGE`; no `RUN` came from Jev. Whether the model is under-confident or correct is not decidable without cross-package oracle signal.
+- Kueue's cross-package behaviour is exercised by its integration suites (`test/integration/...`, envtest), which this run excluded. Running the oracle over those suites is the next step and the only way to get a discriminating recall number.
+
+Do not read the reduction percentages as safe-to-skip percentages. They are upper bounds on savings; the recall column is the one that must hold, and it has not yet been stress-tested.
 
 ## Roadmap
 
-- Revert oracle for recall measurement on green PRs.
+- Run the revert oracle over kueue's integration suites (envtest) to obtain cross-package failures.
+- Calibration study: compare Jev probabilities against oracle outcomes once cross-package signal exists; tune `run_threshold`/`uncertain_threshold` from data.
 - Per-test granularity (`RUN` vs `RUN PACKAGE` becomes real `-run` narrowing).
 - Multi-module `go.work` support.
 - Additional languages beyond Go.
