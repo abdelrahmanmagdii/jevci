@@ -1,0 +1,6 @@
+/jevci
+/jevci-bench
+*.test
+dist/
+.bench/
+benchmark/results/*.jsonl

@@ -1,0 +1,48 @@
+# Full default .jevci.yaml. Every key is optional; these are the defaults.
+jev:
+  enabled: true                    # set false to disable Jev scoring
+  model: jev-latest                # decision model name
+  base_url: https://api.typesafe.ai
+  api_key_env: TYPESAFE_API_KEY    # env var holding the API key
+  run_threshold: 0.70              # score >= this → RUN
+  uncertain_threshold: 0.30        # score in [this, run_threshold) → RUN PACKAGE; below → SKIP
+  batch_size: 8                    # candidates per request
+  concurrency: 4                   # parallel requests
+  timeout: 30s                     # per-request timeout
+  max_retries: 3                   # retries on 429/529/5xx/network errors
+  candidates: transitive_dependents # transitive_dependents | all_unselected
+  max_diff_chars: 24000            # budget for the diff inside the state
+  max_state_chars: 90000           # hard cap on serialized state size
+  diff_context_lines: 3            # -U context lines for the state diff
+safety:
+  always_run_changed_packages: true
+  always_run_changed_tests: true
+  always_run_direct_dependents: true  # false → direct dependents become Jev candidates
+  fail_open: true                  # Jev error → RUN PACKAGE; false → SKIP
+  run_all_on_module_change: true   # go.mod/go.sum/go.work/vendor/modules.txt → run all
+  unattributed_files: run_all      # run_all | ignore ; changed files mapping to no Go package
+  nested_modules: ignore           # ignore | run_all ; changed files inside nested go.mod dirs
+  protected_tests: []              # package patterns, e.g. ./test/e2e/... or ./pkg/foo
+  ignore_files:                    # doublestar globs relative to repo root; bare names match root only, **/name matches any depth, never applies under testdata/
+    - "**/*.md"
+    - "docs/**"
+    - ".github/**"
+    - ".gitlab-ci.yml"
+    - ".circleci/**"
+    - ".travis.yml"
+    - "LICENSE*"
+    - "NOTICE*"
+    - "CHANGELOG*"
+    - "CODEOWNERS"
+    - ".gitignore"
+    - ".gitattributes"
+    - ".editorconfig"
+    - ".golangci.yml"
+    - ".golangci.yaml"
+    - ".goreleaser.yml"
+    - ".goreleaser.yaml"
+    - ".pre-commit-config.yaml"
+    - "Makefile"
+    - "Makefile.*"
+    - "VERSION"
+    - ".jevci.yaml"

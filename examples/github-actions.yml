@@ -1,0 +1,36 @@
+name: tests
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so merge-base works
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install jevci
+        run: go install github.com/abdelrahmanmagdii/jevci/cmd/jevci@latest
+
+      - name: Plan impacted test packages
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: jevci plan --base origin/${{ github.base_ref }} --json > jevci.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jevci
+          path: jevci.json
+
+      - name: Run selected packages
+        run: |
+          if [ "$(jq '.targets_selected' jevci.json)" -gt 0 ]; then
+            go test $(jq -r '.selected_packages[]' jevci.json)
+          else
+            echo "no test targets selected"
+          fi

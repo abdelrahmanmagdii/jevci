@@ -1,0 +1,15 @@
+# JevCI benchmark suite. Each PR is checked out at head; every strategy is
+# planned against the merge base; with run_tests the full suite runs once at
+# head and per-strategy metrics are computed.
+repo: github.com/spf13/cobra
+workdir: .bench/cobra
+run_tests: true
+# strategies: [full, changed, static, jevci]   # default when omitted
+# test_args: ["-count=1"]
+prs:
+  - number: 2429
+    title: "fix: resolve macOS test link failure and update lint rules"
+  - number: 2397
+    title: "#2396: Add cobra unique args validator"
+  - number: 2356
+    title: "fix: prevent completions from mutating os.Args via append side effect"
