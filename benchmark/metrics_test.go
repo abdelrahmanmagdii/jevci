@@ -1,6 +1,9 @@
 package benchmark
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,13 +128,69 @@ func TestAggregate(t *testing.T) {
 	if j.PRs != 2 || j.MeanReductionPercent != 70 || j.MeanRuntimeReductionPct != 50 {
 		t.Fatalf("jevci summary %+v", j)
 	}
-	if j.FailedTotal != 2 || j.FailedDetected != 1 || j.FailedMissed != 1 || j.Recall != 0.5 || j.PRsWithFailures != 1 {
+	if j.FailedTotal != 2 || j.FailedDetected != 1 || j.FailedMissed != 1 || (j.Recall == nil || *j.Recall != 0.5) || j.PRsWithFailures != 1 {
 		t.Fatalf("jevci recall %+v", j)
 	}
 	if j.MeanJevLatencyMS != 1500 || j.TotalJevCostUSD < 0.0299 || j.TotalJevCostUSD > 0.0301 {
 		t.Fatalf("jevci latency/cost %+v", j)
 	}
-	if f := sums[1]; f.Recall != 1 || f.FailedTotal != 2 || f.FailedMissed != 0 {
+	if f := sums[1]; (f.Recall == nil || *f.Recall != 1) || f.FailedTotal != 2 || f.FailedMissed != 0 {
 		t.Fatalf("full summary %+v", f)
+	}
+}
+
+func TestAggregateSeparatesEvaluations(t *testing.T) {
+	records := []Record{
+		{Strategies: []StrategyMetrics{{Strategy: "static", FailedDetected: []string{"p"}}}},
+		{Evaluation: "source_replay", Strategies: []StrategyMetrics{{Strategy: "static", FailedMissed: []string{"q"}}}},
+	}
+	got := Aggregate(records)
+	if len(got) != 2 || got[0].Evaluation != "historical_pr" || got[1].Evaluation != "source_replay" || got[0].Recall == nil || *got[0].Recall != 1 || got[1].Recall == nil || *got[1].Recall != 0 {
+		t.Fatalf("historical and replay results must not be pooled: %+v", got)
+	}
+	var md bytes.Buffer
+	WriteMarkdown(&md, records)
+	if !strings.Contains(md.String(), "historical_pr") || !strings.Contains(md.String(), "source_replay") {
+		t.Fatalf("missing evaluation labels: %s", md.String())
+	}
+}
+
+func TestAggregateUndefinedRecall(t *testing.T) {
+	records := []Record{{PR: 1, FullSuite: FullSuite{Ran: true}, Oracle: Oracle{Ran: true, Method: "revert"}, Strategies: []StrategyMetrics{{Strategy: "full", TargetsTotal: 2, Selected: 2}}}}
+	var raw bytes.Buffer
+	if err := WriteAggregateJSON(&raw, records); err != nil {
+		t.Fatal(err)
+	}
+	var summaries []struct {
+		Recall *float64 `json:"recall"`
+	}
+	if err := json.Unmarshal(raw.Bytes(), &summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].Recall != nil {
+		t.Fatalf("undefined recall must be null: %s", raw.String())
+	}
+	var md bytes.Buffer
+	WriteMarkdown(&md, records)
+	if !strings.Contains(md.String(), "| n/a |") {
+		t.Fatalf("aggregate recall must be n/a: %s", md.String())
+	}
+}
+
+func TestRevertOracleCountsPassingRuntime(t *testing.T) {
+	head := map[string]PackageResult{
+		"p":     {ImportPath: "p", Passed: true},
+		"q":     {ImportPath: "q", Passed: true},
+		"empty": {ImportPath: "empty", Skipped: true},
+	}
+	reverted := map[string]PackageResult{
+		"p":       {ImportPath: "p", Passed: true, Elapsed: 2 * time.Second},
+		"q":       {ImportPath: "q", Passed: true, Elapsed: 3 * time.Second},
+		"empty":   {ImportPath: "empty", Skipped: true, Elapsed: 4 * time.Second},
+		"outside": {ImportPath: "outside", Passed: false, Elapsed: 5 * time.Second},
+	}
+	got := RevertOracle(reverted, head)
+	if got.RuntimeMS != 5000 || len(got.Failed) != 0 {
+		t.Fatalf("runtime must include passing packages in the tested universe: %+v", got)
 	}
 }

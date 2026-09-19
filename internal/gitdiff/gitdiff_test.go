@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func TestOnlyModifiedFiles(t *testing.T) {
+	changes := []FileChange{{Path: "a.go", Status: Modified}, {Path: "a_test.go", Status: Modified}, {Path: "new.go", Status: Added}}
+	got, err := OnlyModifiedFiles(changes, []string{"a.go"})
+	if err != nil || !reflect.DeepEqual(got, changes[:1]) {
+		t.Fatalf("filtered=%+v error=%v", got, err)
+	}
+	got, err = OnlyModifiedFiles(changes, nil)
+	if err != nil || !reflect.DeepEqual(got, changes) {
+		t.Fatalf("unfiltered=%+v error=%v", got, err)
+	}
+	for _, paths := range [][]string{{"missing.go"}, {"new.go"}, {"a.go", "a.go"}} {
+		if _, err := OnlyModifiedFiles(changes, paths); err == nil {
+			t.Fatalf("accepted invalid paths %v", paths)
+		}
+	}
+}
+
 func TestParseHunks(t *testing.T) {
 	diff := `diff --git a/pkg/a.go b/pkg/a.go
 index 111..222 100644

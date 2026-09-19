@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/abdelrahmanmagdii/jevci/internal/config"
@@ -315,6 +316,69 @@ func TestTestdataNeverIgnored(t *testing.T) {
 	}
 	if len(p.IgnoredFiles) != 1 || p.IgnoredFiles[0] != "docs/x.md" {
 		t.Fatalf("ignored %v", p.IgnoredFiles)
+	}
+}
+
+func TestSourceReplayPlan(t *testing.T) {
+	dir, commit := testutil.FixtureRepo(t)
+	testutil.WriteFile(t, dir, "core/feature.go", "package core\nfunc ReplayValue() int { return 0 }\n")
+	commit("replay base")
+	testutil.WriteFile(t, dir, "core/feature.go", "package core\nfunc ReplayValue() int { return 1 }\n")
+	testutil.WriteFile(t, dir, "api/replay_test.go", "package api\nimport \"testing\"\nfunc TestReplay(t *testing.T) {}\n")
+	commit("replay head")
+	o := baseOpts(dir)
+	o.Strategy = policy.StrategyChanged
+	historical, err := Run(context.Background(), o)
+	if err != nil || targetByPkg(historical, "./api").Class != policy.ClassChangedTest {
+		t.Fatalf("historical classification: %v, %+v", err, historical)
+	}
+	o.SourceFiles = []string{"core/feature.go"}
+	replay, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay.ChangedFiles) != 1 || replay.ChangedFiles[0] != "core/feature.go" || targetByPkg(replay, "./api").Class != policy.ClassDirectDependent || targetByPkg(replay, "./api").Decision.Action != policy.Skip {
+		t.Fatalf("replay must exclude test changes: %+v", replay)
+	}
+	if _, _, err := CalibrationInput(context.Background(), o, nil); err == nil {
+		t.Fatal("historical calibration must reject source replay inputs")
+	}
+}
+
+func TestCalibrationInput(t *testing.T) {
+	dir, commit := testutil.FixtureRepo(t)
+	testutil.WriteFile(t, dir, "core/extra.go", "package core\nfunc Extra() {}\n")
+	testutil.WriteFile(t, dir, "api/extra_test.go", "package api\nimport \"testing\"\nfunc TestExtra(t *testing.T) {}\n")
+	commit("calibration fixture")
+	o := baseOpts(dir)
+	mock := &semantic.MockScorer{}
+	o.Scorer = mock
+	change, candidates, err := CalibrationInput(context.Background(), o, []string{
+		"example.com/fixture/core", "example.com/fixture/api", "example.com/fixture/web",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 0 || len(candidates) != 2 || candidates[0].Package != "./api" || candidates[1].Package != "./core" {
+		t.Fatalf("calls=%d candidates=%+v", mock.Calls, candidates)
+	}
+	if candidates[0].Relationship != "this package contains changed test files" || candidates[1].Relationship != "this package contains changed non-test files (distance 0)" {
+		t.Fatalf("relationships: %+v", candidates)
+	}
+	if len(candidates[0].TestFiles) == 0 || len(candidates[0].Tests) == 0 || !strings.Contains(change.Diff, "func Extra()") || len(change.ChangedPackages) != 1 || change.ChangedPackages[0] != "./core" {
+		t.Fatalf("change=%+v candidates=%+v", change, candidates)
+	}
+	_, candidates, err = CalibrationInput(context.Background(), o, []string{"example.com/fixture/core"})
+	if err != nil || len(candidates) != 1 || candidates[0].Package != "./core" {
+		t.Fatalf("universe restriction: %v %+v", err, candidates)
+	}
+	_, candidates, err = CalibrationInput(context.Background(), o, nil)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("empty universe: %v %+v", err, candidates)
+	}
+	o.Head = "HEAD~1"
+	if _, _, err := CalibrationInput(context.Background(), o, nil); err == nil {
+		t.Fatal("expected checked-out head validation")
 	}
 }
 

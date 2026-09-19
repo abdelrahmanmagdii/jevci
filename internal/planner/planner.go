@@ -20,12 +20,13 @@ import (
 
 // Options configures a Plan run.
 type Options struct {
-	RepoDir  string
-	Base     string
-	Head     string
-	Strategy policy.Strategy
-	Config   config.Config
-	Scorer   semantic.Scorer // nil = disabled
+	RepoDir     string
+	Base        string
+	Head        string
+	Strategy    policy.Strategy
+	Config      config.Config
+	Scorer      semantic.Scorer // nil = disabled
+	SourceFiles []string
 }
 
 // Target is one test package with its classification and decision.
@@ -103,6 +104,10 @@ func Run(ctx context.Context, o Options) (*Plan, error) {
 	}
 	p.MergeBase = mb
 	changes, err := repo.Changes(mb, head)
+	if err != nil {
+		return nil, err
+	}
+	changes, err = gitdiff.OnlyModifiedFiles(changes, o.SourceFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -320,20 +325,7 @@ func (p *Plan) score(ctx context.Context, o Options, cfg config.Config, repo *gi
 
 	var candidates []semantic.Candidate
 	for _, i := range candIdx {
-		tg := p.Targets[i]
-		pkg := ws.Packages[tg.ImportPath]
-		c := semantic.Candidate{
-			ID:           tg.ImportPath,
-			Package:      tg.Package,
-			ImportPath:   tg.ImportPath,
-			Relationship: relationship(tg),
-			PackageDoc:   golang.PackageDoc(pkg),
-		}
-		for _, f := range append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...) {
-			c.TestFiles = append(c.TestFiles, tg.Package+"/"+f)
-		}
-		c.Tests = capList(tg.Tests, 40)
-		candidates = append(candidates, c)
+		candidates = append(candidates, makeCandidate(ws, p.Targets[i]))
 	}
 
 	change := buildChange(repo, mb, head, kept, ws, p, cfg)
@@ -372,8 +364,67 @@ func (p *Plan) score(ctx context.Context, o Options, cfg config.Config, repo *gi
 	return scores, errs
 }
 
+func CalibrationInput(ctx context.Context, o Options, universe []string) (semantic.Change, []semantic.Candidate, error) {
+	if len(o.SourceFiles) > 0 {
+		return semantic.Change{}, nil, fmt.Errorf("calibration requires the complete historical diff, not a source replay")
+	}
+	o.Strategy, o.Scorer = policy.StrategyChanged, nil
+	p, err := Run(ctx, o)
+	if err != nil {
+		return semantic.Change{}, nil, err
+	}
+	repo, err := gitdiff.Open(o.RepoDir)
+	if err != nil {
+		return semantic.Change{}, nil, err
+	}
+	current, err := repo.ResolveRev("HEAD")
+	if err != nil {
+		return semantic.Change{}, nil, err
+	}
+	if current != p.Head {
+		return semantic.Change{}, nil, fmt.Errorf("calibration requires head %s to be checked out", p.Head)
+	}
+	changes, err := repo.Changes(p.MergeBase, p.Head)
+	if err != nil {
+		return semantic.Change{}, nil, err
+	}
+	kept, _ := splitIgnored(changes, o.Config.Safety.IgnoreFiles)
+	ws, err := golang.List(ctx, repo.Dir)
+	if err != nil {
+		return semantic.Change{}, nil, err
+	}
+	allowed := make(map[string]bool, len(universe))
+	for _, ip := range universe {
+		allowed[ip] = true
+	}
+	candidates := []semantic.Candidate{}
+	for _, tg := range p.Targets {
+		if allowed[tg.ImportPath] && (tg.Class == policy.ClassChangedPackage || tg.Class == policy.ClassChangedTest) {
+			candidates = append(candidates, makeCandidate(ws, tg))
+		}
+	}
+	return buildChange(repo, p.MergeBase, p.Head, kept, ws, p, o.Config), candidates, nil
+}
+
+func makeCandidate(ws *golang.Workspace, tg Target) semantic.Candidate {
+	pkg := ws.Packages[tg.ImportPath]
+	c := semantic.Candidate{
+		ID: tg.ImportPath, Package: tg.Package, ImportPath: tg.ImportPath,
+		Relationship: relationship(tg), PackageDoc: golang.PackageDoc(pkg),
+		Tests: capList(tg.Tests, 40),
+	}
+	for _, f := range append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...) {
+		c.TestFiles = append(c.TestFiles, tg.Package+"/"+f)
+	}
+	return c
+}
+
 func relationship(tg Target) string {
 	switch {
+	case tg.Class == policy.ClassChangedPackage:
+		return "this package contains changed non-test files (distance 0)"
+	case tg.Class == policy.ClassChangedTest:
+		return "this package contains changed test files"
 	case len(tg.Via) == 0:
 		return "no import dependency on changed packages"
 	case tg.Distance == 1:

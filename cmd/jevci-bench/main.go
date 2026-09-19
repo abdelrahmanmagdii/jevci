@@ -21,6 +21,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   jevci-bench run --suite <file.yaml> --out <results.jsonl> [--no-tests] [--strategies a,b] [--config .jevci.yaml]
+  jevci-bench calibrate --suite <file.yaml> --oracle <results.jsonl> --out <scores.jsonl> [--config .jevci.yaml]
   jevci-bench report --in <results.jsonl> [--md out.md]
 `)
 }
@@ -35,6 +36,8 @@ func run(args []string) int {
 		return runBench(args[1:])
 	case "report":
 		return runReport(args[1:])
+	case "calibrate":
+		return runCalibration(args[1:])
 	default:
 		usage()
 		return 2
@@ -118,7 +121,7 @@ func runBench(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	f, err := os.Create(*outPath)
+	f, err := os.OpenFile(*outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -132,14 +135,26 @@ func runBench(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	failed := false
 	for _, r := range records {
 		status := "ok"
 		if r.Error != "" {
 			status = "error: " + r.Error
 		}
 		fmt.Fprintf(os.Stderr, "PR %d: %s\n", r.PR, status)
+		if r.Error != "" {
+			failed = true
+		}
+		for _, sm := range r.Strategies {
+			if sm.Error != "" {
+				failed = true
+			}
+		}
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (%d records)\n", *outPath, len(records))
+	if failed {
+		return 1
+	}
 	return 0
 }
 
@@ -180,5 +195,72 @@ func runReport(args []string) int {
 		w = os.Stdout
 	}
 	benchmark.WriteMarkdown(w, records)
+	return 0
+}
+
+func runCalibration(args []string) int {
+	fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
+	suitePath := fs.String("suite", "", "suite YAML with pinned commits (required)")
+	oraclePath := fs.String("oracle", "", "measured revert-oracle JSONL (required)")
+	outPath := fs.String("out", "", "new calibration JSONL file (required; must not exist)")
+	cfgPath := fs.String("config", "", "config file (default: suite config or .jevci.yaml)")
+	timeout := fs.Duration("timeout", 30*time.Minute, "overall timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *suitePath == "" || *oraclePath == "" || *outPath == "" || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "error: --suite, --oracle and --out are required; positional arguments are not supported")
+		return 2
+	}
+	suite, err := benchmark.LoadSuite(*suitePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	cfgFile := *cfgPath
+	if cfgFile == "" {
+		cfgFile = suite.Config
+	}
+	if cfgFile == "" {
+		cfgFile = ".jevci.yaml"
+	}
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	key := os.Getenv(cfg.Jev.APIKeyEnv)
+	if !cfg.Jev.Enabled || key == "" {
+		fmt.Fprintf(os.Stderr, "error: calibration requires Jev enabled and %s set; no fail-open scores\n", cfg.Jev.APIKeyEnv)
+		return 1
+	}
+	records, err := benchmark.LoadRecords(*oraclePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	f, err := os.OpenFile(*outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	factory := func() semantic.Scorer { return jev.New(cfg.Jev, key, &semantic.Usage{}) }
+	runErr := benchmark.Calibrate(ctx, suite, cfg, records, factory, f)
+	closeErr := f.Close()
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, "error:", runErr)
+		return 1
+	}
+	if closeErr != nil {
+		fmt.Fprintln(os.Stderr, "error:", closeErr)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s (%d PRs); no tests or oracle reruns\n", *outPath, len(suite.PRs))
 	return 0
 }

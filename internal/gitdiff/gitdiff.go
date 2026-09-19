@@ -150,6 +150,33 @@ func (r *Repo) Changes(from, to string) ([]FileChange, error) {
 	return changes, nil
 }
 
+func OnlyModifiedFiles(changes []FileChange, paths []string) ([]FileChange, error) {
+	if len(paths) == 0 {
+		return changes, nil
+	}
+	want := map[string]bool{}
+	for _, path := range paths {
+		if want[path] {
+			return nil, fmt.Errorf("duplicate source replay path %q", path)
+		}
+		want[path] = true
+	}
+	var selected []FileChange
+	for _, c := range changes {
+		if !want[c.Path] {
+			continue
+		}
+		if c.Status != Modified {
+			return nil, fmt.Errorf("source replay path %q must be a modified file", c.Path)
+		}
+		selected = append(selected, c)
+	}
+	if len(selected) != len(paths) {
+		return nil, fmt.Errorf("source replay paths must all appear in the diff")
+	}
+	return selected, nil
+}
+
 // Diff returns the unified diff between from and to limited to paths with
 // contextLines of context.
 func (r *Repo) Diff(from, to string, paths []string, contextLines int) (string, error) {

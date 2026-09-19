@@ -2,8 +2,14 @@ package benchmark
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/abdelrahmanmagdii/jevci/internal/testutil"
 )
 
 const stream = `{"Time":"2026-01-01T00:00:00Z","Action":"run","Package":"example.com/a","Test":"TestX"}
@@ -36,6 +42,52 @@ func TestParseTestJSON(t *testing.T) {
 	}
 	if _, err := ParseTestJSON([]byte("garbage\n")); err == nil {
 		t.Fatal("want error on empty stream")
+	}
+}
+
+func TestParseTestJSONRejectsIncomplete(t *testing.T) {
+	for _, input := range []string{
+		`{"Action":"start","Package":"p"}`,
+		`{"Action":"pass","Package":"p","Test":"TestX"}`,
+		`{"Action":"fail","Package":"p","Test":"TestX"}`,
+		"{invalid json}",
+		"{\"Action\":\"pass\",\"Package\":\"p\"}\n{\"Action\":\"fail\",\"Package\":\"p\"}",
+	} {
+		if _, err := ParseTestJSON([]byte(input)); err == nil {
+			t.Fatalf("accepted incomplete or invalid stream %q", input)
+		}
+	}
+	res, err := ParseTestJSON([]byte(`{"Action":"pass","Package":"p"}`))
+	if err != nil || !res["p"].Skipped {
+		t.Fatalf("zero-test package counted as tested: %+v, %v", res, err)
+	}
+}
+
+func TestRunFullSuiteArtifacts(t *testing.T) {
+	dir, _ := testutil.FixtureRepo(t)
+	logs := filepath.Join(t.TempDir(), "head")
+	pkgs := []string{"example.com/fixture/core"}
+	results, err := runFullSuite(context.Background(), dir, pkgs, time.Minute, nil, logs)
+	if err != nil || !results[pkgs[0]].Passed || results[pkgs[0]].Skipped {
+		t.Fatalf("results=%+v, error=%v", results, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(logs, "stdout.jsonl"))
+	if err != nil || !bytes.Contains(raw, []byte(`"Action":"pass"`)) {
+		t.Fatalf("missing raw events: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(logs, "stderr.log")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runFullSuite(context.Background(), dir, pkgs, time.Minute, nil, logs); err == nil {
+		t.Fatal("must not overwrite raw artifacts")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := RunFullSuite(ctx, dir, pkgs, time.Minute, nil); err == nil {
+		t.Fatal("canceled execution must not produce results")
+	}
+	if _, err := RunFullSuite(context.Background(), dir, nil, time.Minute, nil); err == nil {
+		t.Fatal("empty universe must not run default package")
 	}
 }
 

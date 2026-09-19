@@ -43,6 +43,10 @@ type Suite struct {
 	Oracle              string        `yaml:"oracle,omitempty"`                // head | revert (default head)
 	TestTimeout         time.Duration `yaml:"test_timeout,omitempty"`          // per go test invocation
 	TestArgs            []string      `yaml:"test_args,omitempty"`
+	ArtifactsDir        string        `yaml:"artifacts_dir,omitempty"`
+	RequireHeadPass     bool          `yaml:"require_head_pass,omitempty"`
+	Evaluation          string        `yaml:"evaluation,omitempty"`
+	SourceFiles         []string      `yaml:"source_files,omitempty"`
 }
 
 // LoadSuite reads a suite YAML file. Config is resolved relative to the
@@ -74,7 +78,39 @@ func LoadSuite(path string) (Suite, error) {
 	if s.Config != "" && !filepath.IsAbs(s.Config) {
 		s.Config = filepath.Join(filepath.Dir(path), s.Config)
 	}
-	return s, nil
+	return s, validateEvaluation(s)
+}
+
+func validateEvaluation(s Suite) error {
+	switch s.Evaluation {
+	case "", "historical_pr":
+		if len(s.SourceFiles) > 0 {
+			return fmt.Errorf("source_files requires evaluation: source_replay")
+		}
+	case "source_replay":
+		if len(s.SourceFiles) == 0 || len(s.PRs) == 0 || !s.RunTests || s.Oracle != "revert" || !s.RequireHeadPass || s.ArtifactsDir == "" {
+			return fmt.Errorf("source_replay requires source_files, PRs, run_tests, oracle: revert, require_head_pass and artifacts_dir")
+		}
+		for _, path := range s.SourceFiles {
+			if filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(path)) != path || strings.HasPrefix(path, "../") || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasPrefix(path, "vendor/") || strings.Contains(path, "/vendor/") || underReplayTestdata(path) {
+				return fmt.Errorf("source_replay requires non-test Go source paths: %q", path)
+			}
+		}
+		for _, pr := range s.PRs {
+			for _, rev := range []string{pr.Base, pr.Head} {
+				if ok, _ := regexp.MatchString("^[0-9a-f]{40}$", rev); !ok {
+					return fmt.Errorf("source_replay requires pinned base and head commit SHAs")
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("unknown evaluation %q", s.Evaluation)
+	}
+	return nil
+}
+
+func underReplayTestdata(path string) bool {
+	return strings.HasPrefix(path, "testdata/") || strings.Contains(path, "/testdata/")
 }
 
 // ScorerFactory returns a fresh scorer per strategy run (isolated usage
@@ -113,12 +149,22 @@ func parseStrategies(in []string) ([]strategySpec, error) {
 // revert oracle, and writes one JSONL record per PR as it completes.
 // Progress is logged to stderr via log.Printf.
 func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory ScorerFactory, out io.Writer) ([]Record, error) {
+	if err := validateEvaluation(suite); err != nil {
+		return nil, err
+	}
 	if err := EnsureClone(ctx, suite.Repo, suite.Workdir); err != nil {
 		return nil, fmt.Errorf("clone %s: %w", suite.Repo, err)
 	}
 	strategies, err := parseStrategies(suite.Strategies)
 	if err != nil {
 		return nil, err
+	}
+	if suite.Evaluation == "source_replay" {
+		for _, spec := range strategies {
+			if spec.st == policy.StrategyJevCI && (scorerFactory == nil || !cfg.Jev.Enabled) {
+				return nil, fmt.Errorf("source replay Jev strategies require an enabled scorer")
+			}
+		}
 	}
 	var exclude *regexp.Regexp
 	if suite.ExcludePackageRegex != "" {
@@ -132,7 +178,10 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 	for _, pr := range suite.PRs {
 		start := time.Now()
 		log.Printf("PR %d: start", pr.Number)
-		rec := Record{Repo: suite.Repo, PR: pr.Number, Title: pr.Title}
+		rec := Record{Repo: suite.Repo, PR: pr.Number, Title: pr.Title, Evaluation: suite.Evaluation, SourceFiles: append([]string{}, suite.SourceFiles...)}
+		if suite.ArtifactsDir != "" {
+			rec.ArtifactsDir = filepath.Join(suite.ArtifactsDir, fmt.Sprintf("pr-%d", pr.Number))
+		}
 		func() {
 			head := pr.Head
 			if head == "" {
@@ -158,6 +207,13 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 				base = b
 			}
 			rec.Base = base
+			if suite.Evaluation == "source_replay" {
+				mb, err := MergeBase(ctx, suite.Workdir, base, head)
+				if err != nil || mb != base {
+					rec.Error = "source replay base must be an ancestor of head"
+					return
+				}
+			}
 
 			pkgs, err := resolvePackages(ctx, suite.Workdir, suite.Packages, exclude)
 			if err != nil {
@@ -177,12 +233,16 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 				if spec.st == policy.StrategyJevCI && scorerFactory != nil {
 					scorer = scorerFactory()
 				}
-				sel, err := PlanSelection(ctx, suite.Workdir, base, head, spec.st, sc, scorer)
+				sel, err := planSelection(ctx, suite.Workdir, base, head, spec.st, sc, scorer, suite.SourceFiles, testLogDir(rec.ArtifactsDir, "plans/"+strings.ReplaceAll(spec.label, ":", "-")))
 				if err != nil {
 					sel = Selection{Strategy: spec.label, Error: err.Error()}
 				}
 				sel.Strategy = spec.label
 				sels = append(sels, sel)
+				if suite.Evaluation == "source_replay" && sel.Error != "" {
+					rec.Error = "source replay planning: " + sel.Error
+					return
+				}
 				log.Printf("PR %d: planned %s (%d selected, %s)", pr.Number, spec.label, len(sel.Selected), time.Since(start).Round(time.Second))
 			}
 
@@ -192,7 +252,7 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 			if suite.RunTests {
 				log.Printf("PR %d: running full suite at head", pr.Number)
 				ts := time.Now()
-				results, err = RunFullSuite(ctx, suite.Workdir, pkgs, suite.TestTimeout, suite.TestArgs)
+				results, err = runFullSuite(ctx, suite.Workdir, pkgs, suite.TestTimeout, suite.TestArgs, testLogDir(rec.ArtifactsDir, "head"))
 				if err != nil {
 					rec.Error = "go test: " + err.Error()
 					return
@@ -200,6 +260,10 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 				full = SummarizeFullSuite(results)
 				rec.FullSuite = full
 				log.Printf("PR %d: head suite done in %s (%d failed)", pr.Number, time.Since(ts).Round(time.Second), len(full.Failed))
+				if suite.RequireHeadPass && (len(full.Failed) > 0 || full.Packages != len(pkgs)) {
+					rec.Error = "head suite must pass every requested package before the oracle runs"
+					return
+				}
 
 				if suite.Oracle == "revert" {
 					oracle = runRevertOracle(ctx, suite.Workdir, base, head, pkgs, suite, results, &rec)
@@ -217,10 +281,19 @@ func Run(ctx context.Context, suite Suite, cfg config.Config, scorerFactory Scor
 			}
 		}()
 		records = append(records, rec)
-		enc.Encode(rec)
+		if err := enc.Encode(rec); err != nil {
+			return records, fmt.Errorf("write benchmark record: %w", err)
+		}
 		log.Printf("PR %d: done in %s%s", pr.Number, time.Since(start).Round(time.Second), errSuffix(rec.Error))
 	}
 	return records, nil
+}
+
+func testLogDir(root, phase string) string {
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, phase)
 }
 
 func errSuffix(e string) string {
@@ -309,6 +382,11 @@ func runRevertOracle(ctx context.Context, workdir, base, head string, pkgs []str
 		rec.Error = "revert oracle changes: " + err.Error()
 		return HeadOracle(SummarizeFullSuite(headResults))
 	}
+	changes, err = gitdiff.OnlyModifiedFiles(changes, suite.SourceFiles)
+	if err != nil {
+		rec.Error = "revert oracle source files: " + err.Error()
+		return Oracle{}
+	}
 	restore, remove := revertSet(changes)
 	if len(restore)+len(remove) == 0 {
 		log.Printf("PR %d: no source files to revert; using head oracle", rec.PR)
@@ -316,32 +394,36 @@ func runRevertOracle(ctx context.Context, workdir, base, head string, pkgs []str
 		o.Method = "head_failures"
 		return o
 	}
+	defer func() {
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := resetWorkdir(restoreCtx, workdir, head); err != nil {
+			if rec.Error != "" {
+				rec.Error += "; "
+			}
+			rec.Error += "reset workdir: " + err.Error()
+		}
+	}()
 	log.Printf("PR %d: reverting %d files, removing %d", rec.PR, len(restore), len(remove))
 	for _, f := range restore {
 		if _, err := git(ctx, workdir, "checkout", base, "--", f); err != nil {
 			rec.Error = "revert oracle checkout: " + err.Error()
-			resetWorkdir(ctx, workdir, head)
-			return HeadOracle(SummarizeFullSuite(headResults))
+			return Oracle{}
 		}
 	}
 	for _, f := range remove {
 		if _, err := git(ctx, workdir, "rm", "-q", "-f", "--", f); err != nil {
 			rec.Error = "revert oracle rm: " + err.Error()
-			resetWorkdir(ctx, workdir, head)
-			return HeadOracle(SummarizeFullSuite(headResults))
+			return Oracle{}
 		}
 	}
 	ts := time.Now()
-	revertResults, err := RunFullSuite(ctx, workdir, pkgs, suite.TestTimeout, suite.TestArgs)
+	revertResults, err := runFullSuite(ctx, workdir, pkgs, suite.TestTimeout, suite.TestArgs, testLogDir(rec.ArtifactsDir, "revert"))
 	if err != nil {
 		rec.Error = "revert oracle go test: " + err.Error()
-		resetWorkdir(ctx, workdir, head)
-		return HeadOracle(SummarizeFullSuite(headResults))
+		return Oracle{}
 	}
 	log.Printf("PR %d: revert suite done in %s", rec.PR, time.Since(ts).Round(time.Second))
-	if err := resetWorkdir(ctx, workdir, head); err != nil {
-		rec.Error = "reset workdir: " + err.Error()
-	}
 	return RevertOracle(revertResults, headResults)
 }
 

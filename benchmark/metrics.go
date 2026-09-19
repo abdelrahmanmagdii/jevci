@@ -64,14 +64,14 @@ type Oracle struct {
 func RevertOracle(revert, head map[string]PackageResult) Oracle {
 	o := Oracle{Ran: true, Method: "revert", Failed: []string{}}
 	for ip, r := range revert {
-		if r.Skipped || r.Passed {
-			continue
-		}
 		h, ok := head[ip]
-		if !ok || h.Skipped {
+		if r.Skipped || !ok || h.Skipped {
 			continue
 		}
 		o.RuntimeMS += r.Elapsed.Milliseconds()
+		if r.Passed {
+			continue
+		}
 		if !h.Passed {
 			o.Noise = append(o.Noise, ip)
 			continue
@@ -133,15 +133,18 @@ type StrategyMetrics struct {
 
 // Record is one line of results.jsonl: one PR, all strategies.
 type Record struct {
-	Repo       string            `json:"repo"`
-	PR         int               `json:"pr"`
-	Title      string            `json:"title,omitempty"`
-	Base       string            `json:"base"`
-	Head       string            `json:"head"`
-	FullSuite  FullSuite         `json:"full_suite"`
-	Oracle     Oracle            `json:"oracle"`
-	Strategies []StrategyMetrics `json:"strategies"`
-	Error      string            `json:"error,omitempty"`
+	Repo         string            `json:"repo"`
+	PR           int               `json:"pr"`
+	Title        string            `json:"title,omitempty"`
+	Base         string            `json:"base"`
+	Head         string            `json:"head"`
+	FullSuite    FullSuite         `json:"full_suite"`
+	Oracle       Oracle            `json:"oracle"`
+	Strategies   []StrategyMetrics `json:"strategies"`
+	Error        string            `json:"error,omitempty"`
+	ArtifactsDir string            `json:"artifacts_dir,omitempty"`
+	Evaluation   string            `json:"evaluation,omitempty"`
+	SourceFiles  []string          `json:"source_files,omitempty"`
 }
 
 // SummarizeFullSuite derives FullSuite from per-package results. Packages
@@ -209,18 +212,19 @@ func Compute(sel Selection, full FullSuite, oracle Oracle, results map[string]Pa
 
 // StrategySummary aggregates one strategy across all records.
 type StrategySummary struct {
-	Strategy                string  `json:"strategy"`
-	PRs                     int     `json:"prs"`
-	MeanReductionPercent    float64 `json:"mean_reduction_percent"`
-	MeanRuntimeReductionPct float64 `json:"mean_runtime_reduction_percent"`
-	FailedTotal             int     `json:"failed_total"`
-	FailedDetected          int     `json:"failed_detected"`
-	FailedMissed            int     `json:"failed_missed"`
-	Recall                  float64 `json:"recall"` // detected/total; 1 when total==0 (nothing to miss)
-	PRsWithFailures         int     `json:"prs_with_failures"`
-	MeanJevLatencyMS        float64 `json:"mean_jev_latency_ms"`
-	TotalJevCostUSD         float64 `json:"total_jev_cost_usd"`
-	Errors                  int     `json:"errors"`
+	Evaluation              string   `json:"evaluation"`
+	Strategy                string   `json:"strategy"`
+	PRs                     int      `json:"prs"`
+	MeanReductionPercent    float64  `json:"mean_reduction_percent"`
+	MeanRuntimeReductionPct float64  `json:"mean_runtime_reduction_percent"`
+	FailedTotal             int      `json:"failed_total"`
+	FailedDetected          int      `json:"failed_detected"`
+	FailedMissed            int      `json:"failed_missed"`
+	Recall                  *float64 `json:"recall"` // detected/total; nil when total==0
+	PRsWithFailures         int      `json:"prs_with_failures"`
+	MeanJevLatencyMS        float64  `json:"mean_jev_latency_ms"`
+	TotalJevCostUSD         float64  `json:"total_jev_cost_usd"`
+	Errors                  int      `json:"errors"`
 }
 
 // Aggregate computes per-strategy summaries over records that planned
@@ -239,11 +243,13 @@ func Aggregate(records []Record) []StrategySummary {
 			continue
 		}
 		for _, sm := range rec.Strategies {
-			a, ok := accs[sm.Strategy]
+			evaluation := evaluationName(rec.Evaluation)
+			key := evaluation + "\x00" + sm.Strategy
+			a, ok := accs[key]
 			if !ok {
-				a = &acc{s: StrategySummary{Strategy: sm.Strategy}}
-				accs[sm.Strategy] = a
-				order = append(order, sm.Strategy)
+				a = &acc{s: StrategySummary{Evaluation: evaluation, Strategy: sm.Strategy}}
+				accs[key] = a
+				order = append(order, key)
 			}
 			if sm.Error != "" {
 				a.s.Errors++
@@ -275,13 +281,20 @@ func Aggregate(records []Record) []StrategySummary {
 			s.MeanRuntimeReductionPct = round1(a.sumRtRed / float64(a.runtimeMeasurable))
 		}
 		s.FailedTotal = s.FailedDetected + s.FailedMissed
-		s.Recall = 1
 		if s.FailedTotal > 0 {
-			s.Recall = float64(s.FailedDetected) / float64(s.FailedTotal)
+			recall := float64(s.FailedDetected) / float64(s.FailedTotal)
+			s.Recall = &recall
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+func evaluationName(name string) string {
+	if name == "" {
+		return "historical_pr"
+	}
+	return name
 }
 
 func round1(f float64) float64 {
