@@ -250,6 +250,8 @@ Discovery and execution share the race-detector context and profile build tags. 
 
 Artifacts include the exact commands, package discovery, Go environment, host resources, raw test output, exit statuses, and diagnostic durations. They expire after one day. Download the artifacts before expiry. These are setup diagnostics, not warm-cache performance measurements or evidence of semantic-selection effectiveness.
 
+Memory diagnostics save read-only cgroup v2 snapshots at worker startup, before tests, after tests, and on handled exit. Each snapshot records `memory.current`, `memory.peak`, `memory.max`, `memory.events`, and `memory.events.local`. Raw counters and collection errors remain in the artifact. Profile results include the observed peak in bytes and before/after test-event differences, including `oom` and `oom_kill`. The peak includes setup and compilation; it is not a test-only peak or per-process RSS. Missing or invalid counters remain unavailable, not zero. A forced container kill can prevent final snapshots. Diagnostics do not change resource limits, test commands, or qualification decisions.
+
 Validate the helpers offline without Docker or subject tests:
 
 ```sh

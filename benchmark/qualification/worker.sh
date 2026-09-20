@@ -14,6 +14,23 @@ storage=$9
 hotrod=${10}
 out=/output
 src=/work/source
+cgroup_root=/sys/fs/cgroup
+cgroup_membership=/proc/self/cgroup
+
+capture_memory() {
+  local directory="$out/memory-$1" file
+  mkdir -p "$directory" || return 0
+  if ! cat "$cgroup_membership" > "$directory/cgroup.txt" 2> "$directory/errors.log"; then
+    return 0
+  fi
+  if [[ ! -r "$cgroup_root/cgroup.controllers" || $(< "$directory/cgroup.txt") != "0::/" ]]; then
+    printf '%s\n' 'Private cgroup v2 memory counters unavailable' > "$directory/unavailable.txt" || true
+    return 0
+  fi
+  for file in memory.current memory.peak memory.max memory.events memory.events.local; do
+    cat "$cgroup_root/$file" > "$directory/$file" 2>> "$directory/errors.log" || true
+  done
+}
 
 phase() {
   printf '%s\n' "$1" > "$out/phase.txt"
@@ -23,6 +40,7 @@ phase() {
 finish() {
   code=$?
   trap - EXIT
+  capture_memory exit || true
   if [[ -d "$src/.git" ]] && git -C "$src" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$src" diff --name-only HEAD > "$out/tracked-changes.txt" || code=1
     git -C "$src" status --porcelain=v1 --untracked-files=all > "$out/source-status.txt" || code=1
@@ -31,6 +49,7 @@ finish() {
   exit "$code"
 }
 trap finish EXIT
+capture_memory start || true
 
 phase checkout
 git init -q "$src"
@@ -69,11 +88,13 @@ fi
 printf '%q ' go test "${args[@]}" ./... > "$out/test-command.txt"
 printf '\n' >> "$out/test-command.txt"
 phase tests
+capture_memory before-tests || true
 TIMEFORMAT='%3R'
 set +e
 { time go test "${args[@]}" ./... > "$out/go-test.jsonl" 2> "$out/go-test.stderr"; } 2> "$out/test-wall-seconds.txt"
 status=$?
 set -e
+capture_memory after-tests || true
 printf '%s\n' "$status" > "$out/test-exit.txt"
 phase complete
 exit "$status"

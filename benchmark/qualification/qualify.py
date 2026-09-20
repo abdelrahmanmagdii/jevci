@@ -65,6 +65,61 @@ def read_artifact(path):
     return path.read_text(encoding="utf-8")
 
 
+def memory_diagnostics(directory):
+    snapshots = {}
+    errors = []
+    fields = ("memory.current", "memory.peak", "memory.max", "memory.events", "memory.events.local")
+
+    def counter(value):
+        if not value.isascii() or not value.isdecimal() or int(value) > 2 ** 64 - 1:
+            raise ValueError("expected an unsigned 64-bit integer")
+        return int(value)
+
+    for stage in ("start", "before-tests", "after-tests", "exit"):
+        values = {}
+        for field in fields:
+            values[field] = None
+            try:
+                text = read_artifact(directory / f"memory-{stage}" / field).strip()
+                if field.startswith("memory.events"):
+                    events = {}
+                    for line in text.splitlines():
+                        key, value = line.split()
+                        if key in events:
+                            raise ValueError("duplicate memory event counter")
+                        events[key] = counter(value)
+                    if not events:
+                        raise ValueError("empty memory event counters")
+                    values[field] = events
+                else:
+                    values[field] = "max" if field == "memory.max" and text == "max" else counter(text)
+            except (OSError, ValueError) as error:
+                errors.append(f"{stage}/{field}: {error}")
+        snapshots[stage] = values
+
+    deltas = {}
+    for field in ("memory.events", "memory.events.local"):
+        before = snapshots["before-tests"][field]
+        after = snapshots["after-tests"][field]
+        deltas[field] = None
+        if before is None or after is None:
+            continue
+        if before.keys() != after.keys() or any(after[key] < value for key, value in before.items()):
+            errors.append(f"{field}: inconsistent counters across the test window")
+            continue
+        deltas[field] = {key: after[key] - value for key, value in before.items()}
+    peaks = [values["memory.peak"] for values in snapshots.values() if values["memory.peak"] is not None]
+    return {
+        "source": "private_cgroup_v2",
+        "peak_scope": "container and descendants since cgroup creation, including setup; not test-only or per-process RSS",
+        "event_scope": "memory.events is hierarchical; memory.events.local excludes descendants",
+        "snapshots": snapshots,
+        "observed_peak_bytes": max(peaks, default=None),
+        "test_event_deltas": deltas,
+        "errors": errors,
+    }
+
+
 def decode_documents(text):
     decoder = json.JSONDecoder()
     offset = 0
@@ -266,6 +321,7 @@ def qualify_profile(profile_name, directory, uid, gid):
         links = remove_artifact_links(directory)
         if links:
             record.update(status="unsafe_artifacts", removed_links=links)
+        record["memory_diagnostics"] = memory_diagnostics(directory)
         record["elapsed_seconds"] = round(time.monotonic() - started, 3)
         (directory / "result.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return record
@@ -277,12 +333,22 @@ def write_run(output, metadata, results):
     lines = [
         "# Environment qualification", "",
         "This is not a held-out evaluation or a test-selection result. No Jev credentials are supplied.", "",
-        "| Profile | Status | Total seconds including setup |",
-        "|---|---|---|",
+        "| Profile | Status | Total seconds including setup | Observed peak GiB including setup | Test-window OOM kills |",
+        "|---|---|---|---|---|",
     ]
     for result in results:
-        lines.append(f"| {result['profile']} | {result['status']} | {result['elapsed_seconds']} |")
-    lines += ["", "Test timings are setup diagnostics, not warm-cache study measurements.", ""]
+        memory = result.get("memory_diagnostics", {})
+        peak = memory.get("observed_peak_bytes")
+        events = memory.get("test_event_deltas", {}).get("memory.events") or {}
+        kills = events.get("oom_kill")
+        peak_text = "n/a" if peak is None else f"{peak / (1024 ** 3):.3f}"
+        kills_text = "n/a" if kills is None else str(kills)
+        lines.append(f"| {result['profile']} | {result['status']} | {result['elapsed_seconds']} | {peak_text} | {kills_text} |")
+    lines += [
+        "", "Test timings are setup diagnostics, not warm-cache study measurements.",
+        "Memory peaks cover the container and descendants, including setup and compilation. OOM kills are counter differences around the test command.",
+        "Missing memory diagnostics show n/a, not zero. A forced container kill can prevent final snapshots.", "",
+    ]
     (output / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 

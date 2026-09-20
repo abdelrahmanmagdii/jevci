@@ -1,4 +1,5 @@
 import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -183,6 +184,179 @@ class QualificationTests(unittest.TestCase):
         with mock.patch.object(qualify, "run_command", side_effect=execute):
             result = qualify.qualify_profile("caddy", self.root / "cleanup", 1001, 1001)
         self.assertEqual(result["status"], "cleanup_failed")
+
+    def memory_snapshot(self, stage, peak=1024, events="oom 0\noom_kill 0\n"):
+        directory = self.root / f"memory-{stage}"
+        directory.mkdir(exist_ok=True)
+        values = {
+            "memory.current": "128\n", "memory.peak": f"{peak}\n",
+            "memory.max": "6442450944\n", "memory.events": events,
+            "memory.events.local": events,
+        }
+        for name, value in values.items():
+            (directory / name).write_text(value)
+        return directory
+
+    def test_memory_peak_includes_setup_and_events_use_test_window(self):
+        self.memory_snapshot("start", 1024)
+        self.memory_snapshot("before-tests", 2048, "oom 2\noom_kill 1\n")
+        self.memory_snapshot("after-tests", 4096, "oom 5\noom_kill 2\n")
+        self.memory_snapshot("exit", 8192, "oom 5\noom_kill 2\n")
+        result = qualify.memory_diagnostics(self.root)
+        self.assertEqual(result["observed_peak_bytes"], 8192)
+        self.assertEqual(result["snapshots"]["before-tests"]["memory.max"], 6442450944)
+        self.assertEqual(result["test_event_deltas"]["memory.events"], {"oom": 3, "oom_kill": 1})
+        self.assertEqual(result["test_event_deltas"]["memory.events.local"], {"oom": 3, "oom_kill": 1})
+        self.assertEqual(result["errors"], [])
+
+    def test_memory_counters_can_be_zero_or_unlimited_without_being_missing(self):
+        for stage in ("start", "before-tests", "after-tests", "exit"):
+            directory = self.memory_snapshot(stage, 0)
+            (directory / "memory.max").write_text("max\n")
+        result = qualify.memory_diagnostics(self.root)
+        self.assertEqual(result["observed_peak_bytes"], 0)
+        self.assertEqual(result["snapshots"]["exit"]["memory.max"], "max")
+        self.assertEqual(result["test_event_deltas"]["memory.events"]["oom_kill"], 0)
+        self.assertEqual(result["errors"], [])
+
+    def test_missing_memory_counters_are_unknown_not_zero(self):
+        result = qualify.memory_diagnostics(self.root)
+        self.assertIsNone(result["observed_peak_bytes"])
+        self.assertIsNone(result["test_event_deltas"]["memory.events"])
+        self.assertIsNone(result["snapshots"]["exit"]["memory.current"])
+        self.assertTrue(result["errors"])
+
+    def test_missing_final_snapshot_does_not_imply_zero_test_oom_events(self):
+        self.memory_snapshot("start", 1024)
+        self.memory_snapshot("before-tests", 2048)
+        result = qualify.memory_diagnostics(self.root)
+        self.assertEqual(result["observed_peak_bytes"], 2048)
+        self.assertIsNone(result["test_event_deltas"]["memory.events"])
+        self.assertIsNone(result["snapshots"]["after-tests"]["memory.peak"])
+
+    def test_invalid_memory_counters_are_reported_without_raising(self):
+        directory = self.memory_snapshot("exit")
+        for value in ("-1", "NaN", "Infinity", "12.5", "1_000", "18446744073709551616", ""):
+            with self.subTest(peak=value):
+                (directory / "memory.peak").write_text(value)
+                result = qualify.memory_diagnostics(self.root)
+                self.assertIsNone(result["observed_peak_bytes"])
+                self.assertTrue(any(error.startswith("exit/memory.peak:") for error in result["errors"]))
+        for value in ("oom -1", "oom nan", "oom 1\noom 2", "oom", ""):
+            with self.subTest(events=value):
+                (directory / "memory.events").write_text(value)
+                result = qualify.memory_diagnostics(self.root)
+                self.assertIsNone(result["snapshots"]["exit"]["memory.events"])
+
+    def test_regressing_or_mismatched_event_counters_have_no_delta(self):
+        self.memory_snapshot("before-tests", events="oom 2\noom_kill 1\n")
+        for events in ("oom 1\noom_kill 1\n", "oom 3\n"):
+            with self.subTest(events=events):
+                self.memory_snapshot("after-tests", events=events)
+                result = qualify.memory_diagnostics(self.root)
+                self.assertIsNone(result["test_event_deltas"]["memory.events"])
+                self.assertTrue(any("inconsistent counters" in error for error in result["errors"]))
+
+    def test_memory_artifact_symlinks_are_not_read(self):
+        directory = self.root / "memory-exit"
+        directory.mkdir()
+        target = self.root / "outside"
+        target.write_text("999\n")
+        (directory / "memory.peak").symlink_to(target)
+        result = qualify.memory_diagnostics(self.root)
+        self.assertIsNone(result["observed_peak_bytes"])
+        self.assertEqual(target.read_text(), "999\n")
+
+    def test_memory_diagnostics_survive_failed_timed_out_and_cancelled_profiles(self):
+        for failure in (None, subprocess.TimeoutExpired("docker", 1), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                directory = self.root / f"run-{type(failure).__name__}"
+                diagnostic = {"observed_peak_bytes": 8192, "test_event_deltas": {"memory.events": {"oom_kill": 1}}}
+
+                def execute(arguments, *_args, **_kwargs):
+                    if arguments[1] == "pull" and failure is not None:
+                        raise failure
+                    stdout = '"sha256:fixture"' if arguments[1:3] == ["image", "inspect"] else ""
+                    return subprocess.CompletedProcess(arguments, 1 if arguments[1] == "run" else 0, stdout=stdout)
+
+                with mock.patch.object(qualify, "run_command", side_effect=execute), \
+                     mock.patch.object(qualify, "evaluate_artifacts", return_value={"status": "test_failed"}), \
+                     mock.patch.object(qualify, "memory_diagnostics", return_value=diagnostic) as collect:
+                    result = qualify.qualify_profile("caddy", directory, 1001, 1001)
+                expected = "test_failed" if failure is None else "cancelled" if isinstance(failure, KeyboardInterrupt) else "timeout"
+                self.assertEqual(result["status"], expected)
+                collect.assert_called_once_with(directory)
+                self.assertEqual(result["memory_diagnostics"], diagnostic)
+                self.assertEqual(json.loads((directory / "result.json").read_text())["memory_diagnostics"], diagnostic)
+
+    def test_summary_distinguishes_missing_memory_diagnostics_from_zero(self):
+        results = [
+            {"profile": "missing", "status": "timeout", "elapsed_seconds": 1},
+            {"profile": "measured", "status": "qualified", "elapsed_seconds": 2,
+             "memory_diagnostics": {"observed_peak_bytes": 3 * 1024 ** 3, "test_event_deltas": {"memory.events": {"oom_kill": 0}}}},
+        ]
+        qualify.write_run(self.root, {}, results)
+        summary = (self.root / "summary.md").read_text()
+        self.assertIn("| missing | timeout | 1 | n/a | n/a |", summary)
+        self.assertIn("| measured | qualified | 2 | 3.000 | 0 |", summary)
+        self.assertEqual(json.loads((self.root / "run.json").read_text())["results"], results)
+
+    def test_worker_captures_memory_without_changing_exit_status(self):
+        worker = (qualify.CONTEXT / "worker.sh").read_text()
+        for test_exit, setup_exit, private_cgroup in ((0, 0, True), (7, 0, True), (7, 0, False), (0, 3, True)):
+            with self.subTest(test_exit=test_exit, setup_exit=setup_exit, private_cgroup=private_cgroup):
+                root = self.root / f"worker-{test_exit}-{setup_exit}-{private_cgroup}"
+                output, source, cgroup = (root / name for name in ("output", "source", "cgroup"))
+                for directory in (output, source / ".git", cgroup):
+                    directory.mkdir(parents=True)
+                membership = root / "membership"
+                membership.write_text("0::/\n" if private_cgroup else "0::/host-path\n")
+                for name, value in {"cgroup.controllers": "memory", "memory.current": "128", "memory.peak": "1024", "memory.max": "6442450944", "memory.events": "oom 0\noom_kill 0\n", "memory.events.local": "oom 0\noom_kill 0\n"}.items():
+                    (cgroup / name).write_text(value)
+                script = worker
+                for name, old, new in (("out", "/output", output), ("src", "/work/source", source), ("cgroup_root", "/sys/fs/cgroup", cgroup), ("cgroup_membership", "/proc/self/cgroup", membership)):
+                    script = script.replace(f"{name}={old}\n", f"{name}={shlex.quote(str(new))}\n")
+                stubs = f"""
+git() {{
+  if [[ "$*" == *rev-parse* ]]; then printf '%s\\n' fixture; fi
+  return 0
+}}
+go() {{
+  case "$*" in
+    'version') printf '%s\\n' 'go version go1.26.6 linux/amd64' ;;
+    'env GOVERSION') printf '%s\\n' go1.26.6 ;;
+    'env GOOS') printf '%s\\n' linux ;;
+    'env GOARCH') printf '%s\\n' amd64 ;;
+    'env -json '*|'list '*) printf '%s\\n' '{{}}' ;;
+    'mod download') return {setup_exit} ;;
+    'test '*)
+      printf '%s\\n' 2048 > "$cgroup_root/memory.peak"
+      printf 'oom 1\\noom_kill 1\\n' > "$cgroup_root/memory.events"
+      return {test_exit}
+      ;;
+    *) return 99 ;;
+  esac
+}}
+"""
+                result = subprocess.run(["bash", "-c", stubs + script, "worker", "fixture", "example/repo", "fixture", "go1.26.6", "-mod=readonly", "10m", "0", "0", "", "0"], capture_output=True, text=True, timeout=10)
+                expected_exit = setup_exit or test_exit
+                self.assertEqual(result.returncode, expected_exit, result.stderr)
+                self.assertEqual((output / "worker-exit.txt").read_text().strip(), str(expected_exit))
+                self.assertTrue((output / "memory-start" / "cgroup.txt").exists())
+                self.assertTrue((output / "memory-exit" / "cgroup.txt").exists())
+                diagnostic = qualify.memory_diagnostics(output)
+                if setup_exit:
+                    self.assertFalse((output / "test-exit.txt").exists())
+                    self.assertIsNone(diagnostic["test_event_deltas"]["memory.events"])
+                elif private_cgroup:
+                    self.assertEqual((output / "test-exit.txt").read_text().strip(), str(test_exit))
+                    self.assertEqual(diagnostic["observed_peak_bytes"], 2048)
+                    self.assertEqual(diagnostic["test_event_deltas"]["memory.events"]["oom_kill"], 1)
+                    self.assertEqual(diagnostic["test_event_deltas"]["memory.events.local"]["oom_kill"], 0)
+                    self.assertEqual(diagnostic["errors"], [])
+                else:
+                    self.assertTrue((output / "memory-exit" / "unavailable.txt").exists())
+                    self.assertIsNone(diagnostic["observed_peak_bytes"])
 
     def test_host_resource_metadata(self):
         with mock.patch.object(qualify.os, "sysconf", side_effect=[4096, 2097152]), mock.patch.object(Path, "read_text", return_value="model name\t: Example CPU\n"):
