@@ -137,6 +137,48 @@ class QualificationTests(unittest.TestCase):
         entrypoint = next(line for line in dockerfile.splitlines() if line.startswith("ENTRYPOINT "))
         self.assertEqual(json.loads(entrypoint[len("ENTRYPOINT "):])[:2], ["/usr/bin/env", "-i"])
 
+    def test_memory_limits_are_profile_specific_with_swap_disabled(self):
+        expected = {"prometheus": 12, "caddy": 6, "jaeger": 6}
+        self.assertEqual(set(qualify.PROFILES), set(expected))
+        for name, limit in expected.items():
+            with self.subTest(profile=name):
+                profile = qualify.PROFILES[name]
+                self.assertEqual(profile["memory_limit_gib"], limit)
+                command = qualify.container_command("test-worker", "test-image", self.root, name, profile)
+                self.assertEqual(command[command.index("--memory") + 1], f"{limit}g")
+                self.assertEqual(command[command.index("--memory-swap") + 1], f"{limit}g")
+                self.assertEqual(command[command.index("--cpus") + 1], "2")
+                self.assertEqual(command[command.index("--pids-limit") + 1], "2048")
+        self.assertEqual(qualify.PROFILE_SECONDS, 1800)
+
+    def test_run_metadata_records_limits_for_selected_profiles(self):
+        limits = {"prometheus": 12, "caddy": 6, "jaeger": 6}
+        for selection in ("all", *limits):
+            with self.subTest(profile=selection):
+                output = self.root / selection
+                names = list(limits) if selection == "all" else [selection]
+
+                def execute(name, *_args):
+                    return {"profile": name, "configuration": qualify.PROFILES[name], "status": "qualified", "elapsed_seconds": 1}
+
+                with mock.patch.dict(qualify.os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), \
+                     mock.patch.object(qualify.platform, "system", return_value="Linux"), \
+                     mock.patch.object(qualify.platform, "machine", return_value="x86_64"), \
+                     mock.patch.object(qualify.os, "getuid", return_value=1001), \
+                     mock.patch.object(qualify.os, "getgid", return_value=1001), \
+                     mock.patch.object(qualify, "host_resources", return_value={}), \
+                     mock.patch.object(qualify, "qualify_profile", side_effect=execute) as run:
+                    self.assertEqual(qualify.main(["--profile", selection, "--output", str(output)]), 0)
+                result = json.loads((output / "run.json").read_text())
+                self.assertEqual(result["version"], 2)
+                self.assertEqual(result["container_memory_limits_gib"], {name: limits[name] for name in names})
+                self.assertNotIn("container_memory_limit_gib", result)
+                self.assertEqual(result["container_cpu_limit"], 2)
+                self.assertEqual(result["per_profile_timeout_seconds"], 1800)
+                self.assertEqual([call.args[0] for call in run.call_args_list], names)
+                for profile in result["results"]:
+                    self.assertEqual(profile["configuration"]["memory_limit_gib"], limits[profile["profile"]])
+
     def test_artifact_links_are_removed_without_touching_targets(self):
         outside = self.root / "outside"
         outside.write_text("preserved")

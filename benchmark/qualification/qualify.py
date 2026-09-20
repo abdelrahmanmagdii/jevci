@@ -17,6 +17,7 @@ PROFILES = {
         "repo": "prometheus/prometheus",
         "revision": "9c8c131e849264f1dd210c89e5232dc9d1723536",
         "module": "github.com/prometheus/prometheus",
+        "memory_limit_gib": 12,
         "go_version": "go1.27.0",
         "image": "golang:1.27.0-bookworm@sha256:ba5ef6614ca131b80a635fc6a7b715d9ee8a7f333debdbb81afb68259c7d48d4",
         "go_flags": "-mod=readonly",
@@ -30,6 +31,7 @@ PROFILES = {
         "repo": "caddyserver/caddy",
         "revision": "62a72977e58c87fad7e7726c18b58f10c653f2d3",
         "module": "github.com/caddyserver/caddy/v2",
+        "memory_limit_gib": 6,
         "go_version": "go1.26.6",
         "image": "golang:1.26.6-bookworm@sha256:433f9dc4f8ea3a1ce4e28f9f15d0f7c056b10475307f886d6f1ac1ccc4abd976",
         "go_flags": "-mod=readonly -tags=nobadger,nomysql,nopgx",
@@ -43,6 +45,7 @@ PROFILES = {
         "repo": "jaegertracing/jaeger",
         "revision": "806f4447841ecdb60519f408b004a599d515f437",
         "module": "github.com/jaegertracing/jaeger",
+        "memory_limit_gib": 6,
         "go_version": "go1.26.6",
         "image": "golang:1.26.6-bookworm@sha256:433f9dc4f8ea3a1ce4e28f9f15d0f7c056b10475307f886d6f1ac1ccc4abd976",
         "go_flags": "-mod=readonly",
@@ -254,10 +257,11 @@ def run_command(arguments, log, deadline, capture=False, check=True):
 
 
 def container_command(name, image, directory, profile_name, profile):
+    memory = f"{profile['memory_limit_gib']}g"
     return [
         "docker", "run", "--rm", "--name", name,
-        "--platform", "linux/amd64", "--cpus", "2", "--memory", "6g",
-        "--memory-swap", "6g", "--pids-limit", "2048",
+        "--platform", "linux/amd64", "--cpus", "2", "--memory", memory,
+        "--memory-swap", memory, "--pids-limit", "2048",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
         "--mount", f"type=bind,src={directory},dst=/output",
         image, profile_name, profile["repo"], profile["revision"],
@@ -376,8 +380,9 @@ def main(arguments=None):
         parser.error("qualification requires a non-root runner user and group")
     output = args.output.resolve()
     output.mkdir(parents=False, exist_ok=False)
+    names = list(PROFILES) if args.profile == "all" else [args.profile]
     metadata = {
-        "version": 1,
+        "version": 2,
         "purpose": "environment_qualification",
         "eligible_as_heldout_result": False,
         "jev_enabled": False,
@@ -389,7 +394,7 @@ def main(arguments=None):
         "runner_image": os.environ.get("ImageOS"),
         "runner_image_version": os.environ.get("ImageVersion"),
         "container_cpu_limit": 2,
-        "container_memory_limit_gib": 6,
+        "container_memory_limits_gib": {name: PROFILES[name]["memory_limit_gib"] for name in names},
         "per_profile_timeout_seconds": PROFILE_SECONDS,
         "network": "public network access; no host credentials, host process namespace, or Docker socket mounted",
         "billing": "workflow timeout does not enforce a dollar cap; owner confirms allowance and spending controls before dispatch",
@@ -397,7 +402,6 @@ def main(arguments=None):
     metadata.update(host_resources())
     results = []
     write_run(output, metadata, results)
-    names = list(PROFILES) if args.profile == "all" else [args.profile]
     try:
         for name in names:
             print(f"Qualifying {name}; maximum {PROFILE_SECONDS // 60} minutes", flush=True)
