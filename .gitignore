@@ -4,3 +4,8 @@
 dist/
 .bench/
 benchmark/results/*.log
+
+.idea/
+.DS_Store
+__pycache__/
+*.py[cod]
