@@ -1,0 +1,67 @@
+name: evaluation-qualify
+run-name: Qualify ${{ inputs.profile }} on Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Repository profile to qualify; all runs sequentially
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - prometheus
+          - caddy
+          - jaeger
+      confirm_budget:
+        description: I confirm Actions minutes and artifact storage fit the approved $10 qualification budget
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluation-qualification-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: inputs.confirm_budget && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      QUALIFICATION_PROFILE: ${{ inputs.profile }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out JevCI
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          persist-credentials: false
+
+      - name: Check qualification helpers
+        timeout-minutes: 5
+        run: |
+          python3 --version
+          docker version
+          bash -n benchmark/qualification/worker.sh
+          python3 -m unittest discover -s benchmark/qualification -p 'test_*.py'
+
+      - name: Qualify fixed repository snapshots
+        timeout-minutes: 100
+        run: |
+          python3 benchmark/qualification/qualify.py \
+            --profile "$QUALIFICATION_PROFILE" \
+            --output "$RUNNER_TEMP/jevci-qualification"
+
+      - name: Save qualification artifacts
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qualification-${{ inputs.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/jevci-qualification
+          if-no-files-found: warn
+          retention-days: 1
