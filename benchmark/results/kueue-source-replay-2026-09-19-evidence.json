@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "evaluation": "source_replay",
+  "historical_pr": 15365,
+  "repo": "github.com/kubernetes-sigs/kueue",
+  "base": "6c04e3dd3e52aa5ad89791c786ac904789e0dae0",
+  "head": "9e129797ba50bec728e7459d76c70e94b54e2f33",
+  "comparison": "fixed source versus buggy source, with all tests and other source held at head",
+  "source_files": ["pkg/workloadslicing/pods.go"],
+  "test_files_changed_between_replay_phases": false,
+  "model": "jev-1.13.0",
+  "thresholds": {"run": 0.7, "uncertain": 0.3},
+  "packages": [
+    {"package": "sigs.k8s.io/kueue/pkg/workloadslicing", "class": "changed", "distance": 0, "head": "pass", "revert": "fail", "oracle_positive": true, "head_elapsed_seconds": 0.636, "revert_elapsed_seconds": 0.667},
+    {"package": "sigs.k8s.io/kueue/pkg/controller/tas", "class": "direct", "distance": 1, "head": "pass", "revert": "fail", "oracle_positive": true, "head_elapsed_seconds": 0.854, "revert_elapsed_seconds": 0.89, "jevci_score": null, "jevci_selection_source": "static", "jevci_no_direct_score": 0.55},
+    {"package": "sigs.k8s.io/kueue/pkg/controller/core", "class": "direct", "distance": 1, "head": "pass", "revert": "pass", "oracle_positive": false, "head_elapsed_seconds": 2.163, "revert_elapsed_seconds": 2.337, "jevci_score": null, "jevci_selection_source": "static", "jevci_no_direct_score": 0.66}
+  ],
+  "strategies": [
+    {"strategy": "full", "selected": 3, "targets_total": 3, "detected": 2, "missed": 0, "recall": 1},
+    {"strategy": "changed", "selected": 1, "targets_total": 3, "detected": 1, "missed": 1, "recall": 0.5, "missed_package": "sigs.k8s.io/kueue/pkg/controller/tas"},
+    {"strategy": "static", "selected": 3, "targets_total": 3, "detected": 2, "missed": 0, "recall": 1},
+    {"strategy": "jevci", "selected": 3, "targets_total": 3, "detected": 2, "missed": 0, "recall": 1},
+    {"strategy": "jevci:no-direct", "selected": 3, "targets_total": 3, "detected": 2, "missed": 0, "recall": 1}
+  ],
+  "cross_package_regression_tests": [
+    "TestNodeFailureReconciler/Node_NotReady,_another_workload's_running_pod_does_not_prevent_replacement",
+    "TestNodeFailureReconciler/Node_NotReady,_an_unmanaged_running_pod_does_not_prevent_replacement"
+  ],
+  "cross_package_failure": {
+    "assertion": "Unexpected unhealthyNodes in status (-want/+got)",
+    "expected": [{"Name": "test-node-name"}],
+    "actual": null,
+    "build_errors_detected": false
+  },
+  "confirmation": {
+    "command": "go test -json -count=3 -ldflags=-linkmode=internal -run '^TestNodeFailureReconciler$' ./pkg/controller/tas",
+    "per_regression_subtest": {
+      "head": {"passed": 3, "failed": 0, "skipped": 0},
+      "revert": {"passed": 0, "failed": 3, "skipped": 0},
+      "restored": {"passed": 3, "failed": 0, "skipped": 0}
+    },
+    "test_files_unchanged": true,
+    "checkout_restored_clean": true
+  },
+  "raw_files": [
+    {"path": "benchmark/results/kueue-source-replay-2026-09-19.jsonl", "sha256": "81f29486950f82da5474b965974a539337e4c4765dccb0f28567752b0f0368e0"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/head/stdout.jsonl", "sha256": "1750fe0c0e95a23e88feaf04426eddc6a5e5bbd13531e3b99890a7c6fb0d6281"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/revert/stdout.jsonl", "sha256": "48991734f8fadc7fb216554aa0406d566f96087eceb53ea5d14e0154b6875442"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/confirmation/head.jsonl", "sha256": "5d250e71d146cc96e46acd8d4a864b40ac5c57655769494a4cbc79dc33fe9c40"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/confirmation/revert.jsonl", "sha256": "968f55c7ff23116113d3cc2e1cf935ee21bb5027ab3123b0e5e3bd5b7eac2fbe"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/confirmation/restored.jsonl", "sha256": "ef05887f2bdcab3b496281198dc12b362c27b5c3c248397439c30a7bd72173db"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/plans/full/plan.json", "sha256": "0766dfc90232575871c7f2fbf6212d35bfb709e2fc6422c2c50ce32da94e99df"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/plans/changed/plan.json", "sha256": "dcdb0094e5daca747986f8ec3f6b79ceff4087cc3c7cef154156528145d510d0"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/plans/static/plan.json", "sha256": "3d5284129fd6bc83cd87783378f28963db82344078fe6cecb3559dda94b4521f"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/plans/jevci/plan.json", "sha256": "fd9165d5215fb3b9d1a527d540a0fb1132b095fa27503ef2279532a5ad146d40"},
+    {"path": ".bench/kueue-source-replay-2026-09-19-artifacts/pr-15365/plans/jevci-no-direct/plan.json", "sha256": "51305c8cd49119a1e6094a454792571d533ed2ea5cd5b026cff78da6c66e5cd1"}
+  ],
+  "limitations": [
+    "This is a controlled replay of one historical bug, not recall measured on the unmodified historical PR.",
+    "The historical PR adds the TAS regression cases. A changed-test rule would select TAS for that original PR; only the source-only replay holds those tests fixed.",
+    "The TAS positive is a direct dependent. Default JevCI selects it through the static safeguard, not a semantic score.",
+    "The no-direct variant scores TAS at 0.55 and the core package, which passes this replay, at 0.66. Both remain selected at the unchanged 0.30 threshold.",
+    "All strategies except changed select all three tested packages. This case shows no measured Jev reduction over static analysis.",
+    "The test universe is targeted, not representative. Passing a replay is not proof of safe skipping in other cases.",
+    "Plans were recorded before oracle outcomes. Model usage includes candidates outside the three-package test universe."
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "result": "inconclusive_no_oracle_failures",
+  "repo": "github.com/kubernetes-sigs/kueue",
+  "pr": 15651,
+  "base": "3cdc70e95dbb76ea88cd31bac1c401fc25655f85",
+  "head": "9c6b7f334a5148690b8272cd7b61f7de1cefbf74",
+  "environment": {
+    "platform": "darwin/arm64",
+    "go": "go1.26.6",
+    "kubernetes": "1.37.0",
+    "etcd": "3.7.0",
+    "setup_envtest": "v0.25.0",
+    "kustomize": "v5.8.1",
+    "ginkgo_seed": 15651,
+    "package_parallelism": 1,
+    "race_enabled": false,
+    "use_existing_cluster": false
+  },
+  "source_revert": {
+    "restored_files": ["pkg/scheduler/scheduler.go"],
+    "removed_files": [],
+    "integration_test_files_changed_by_pr": false
+  },
+  "packages": [
+    {
+      "package": "sigs.k8s.io/kueue/test/integration/singlecluster/scheduler",
+      "go_test": "TestScheduler",
+      "head": {"terminal_action": "pass", "package_elapsed_seconds": 259.566, "specs_ran": 132, "specs_passed": 132, "specs_failed": 0, "specs_pending": 0, "specs_skipped": 0},
+      "revert": {"terminal_action": "pass", "package_elapsed_seconds": 264.146, "specs_ran": 132, "specs_passed": 132, "specs_failed": 0, "specs_pending": 0, "specs_skipped": 0}
+    },
+    {
+      "package": "sigs.k8s.io/kueue/test/integration/singlecluster/tas",
+      "go_test": "TestAPIs",
+      "head": {"terminal_action": "pass", "package_elapsed_seconds": 331.711, "specs_ran": 147, "specs_passed": 147, "specs_failed": 0, "specs_pending": 0, "specs_skipped": 0},
+      "revert": {"terminal_action": "pass", "package_elapsed_seconds": 329.106, "specs_ran": 147, "specs_passed": 147, "specs_failed": 0, "specs_pending": 0, "specs_skipped": 0}
+    }
+  ],
+  "total_specs_per_phase": 279,
+  "oracle_failed_packages": [],
+  "strategies": [
+    {"strategy": "full", "selected": 2, "targets_total": 2, "recall": null},
+    {"strategy": "changed", "selected": 0, "targets_total": 2, "recall": null},
+    {"strategy": "static", "selected": 2, "targets_total": 2, "recall": null},
+    {"strategy": "jevci", "selected": 2, "targets_total": 2, "recall": null},
+    {"strategy": "jevci:no-direct", "selected": 2, "targets_total": 2, "recall": null}
+  ],
+  "raw_files": [
+    {"path": "benchmark/results/kueue-integration-pilot-2026-09-19.jsonl", "sha256": "2cb876b4e3f17c1d6e28a2cb758cd30aa8040f2278cc5ab006f0ccaa8d21e522"},
+    {"path": ".bench/kueue-integration-pilot-2026-09-19-artifacts/pr-15651/head/stdout.jsonl", "sha256": "9e21bced8d6701c08c391284bfccab896e348106d301a5c63ca6c8f0ba5270b1"},
+    {"path": ".bench/kueue-integration-pilot-2026-09-19-artifacts/pr-15651/head/stderr.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"path": ".bench/kueue-integration-pilot-2026-09-19-artifacts/pr-15651/revert/stdout.jsonl", "sha256": "6d01c71641960af7ee5fbc7d50cb74c2a04b555686ae46de7387c2a148fce872"},
+    {"path": ".bench/kueue-integration-pilot-2026-09-19-artifacts/pr-15651/revert/stderr.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+  ],
+  "limitations": [
+    "This is a targeted one-PR, two-package pilot, not a representative benchmark.",
+    "Zero oracle failures make recall undefined, not perfect.",
+    "Passing the source revert does not prove that a suite is safe to skip for future changes.",
+    "The preserved raw benchmark record's oracle.runtime_ms is zero because the old implementation counted only failing package durations. Use the raw per-package durations captured here; the tests did run.",
+    "Planner usage in the raw benchmark record includes candidates outside the two-package test universe. It is not a cost measurement limited to these two suites."
+  ]
+}

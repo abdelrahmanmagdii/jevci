@@ -1,0 +1,25 @@
+repo: github.com/kubernetes-sigs/kueue
+workdir: .bench/kueue-integration
+packages:
+  - ./test/integration/singlecluster/tas
+  - ./test/integration/singlecluster/scheduler
+run_tests: true
+oracle: revert
+require_head_pass: true
+artifacts_dir: .bench/kueue-integration-pilot-2026-09-19-artifacts
+test_timeout: 42m
+test_args:
+  - -p=1
+  - -ldflags=-linkmode=internal
+  - -args
+  - -ginkgo.seed=15651
+  - -ginkgo.timeout=40m
+  - -ginkgo.no-color=true
+  - -ginkgo.v
+strategies: [full, changed, static, jevci, jevci:no-direct]
+config: kueue.jevci.yaml
+prs:
+  - number: 15651
+    head: 9c6b7f334a5148690b8272cd7b61f7de1cefbf74
+    base: 3cdc70e95dbb76ea88cd31bac1c401fc25655f85
+    title: "Remove the preempted Workloads' Pods from the simulator when recomputing"

@@ -236,6 +236,27 @@ Ground truth comes from the revert oracle (`oracle: revert`): the PR's non-test 
 
 Metrics per strategy (`benchmark/metrics.go`): targets total, selected, reduction %, selected-suite runtime (the serial sum of selected package durations), runtime reduction %, failed detected/missed, recall against the oracle's impact set, plan time, Jev latency, Jev tokens and cost.
 
+### Manual Linux environment qualification
+
+**The `evaluation-qualify` GitHub Actions workflow checks test environments only. It does not run Jev, inject bugs, or produce evaluation results.**
+
+The workflow runs only through `workflow_dispatch` on `main`, after the owner confirms the Actions budget. It does not run on pushes or pull requests. The owner must verify included minutes and billing limits; the workflow cannot enforce a dollar spending cap.
+
+Choose `all`, `prometheus`, `caddy`, or `jaeger` in the Actions tab. Profiles use fixed source revisions and digest-pinned Go images. Projects run sequentially in non-root containers with a clean environment. The only host mount is the output directory; no API credentials or Docker socket are supplied. Network access remains available for public dependencies and tests.
+
+The standard private-repository runner has 2 CPUs and 8 GB RAM. Each test container is limited to 2 CPUs and 6 GiB. Each profile has a 30-minute limit, including setup. The workflow has a 120-minute limit. A timeout, missing test result, failed test, or tracked source change cannot qualify a profile. Failures are not retried automatically.
+
+Discovery and execution share the race-detector context and profile build tags. Caddy retains its short-test and coverage settings. Jaeger uses memory storage, builds HotROD, and retains coverage. Nested-module jobs and unrelated workflow steps are outside this qualification scope.
+
+Artifacts include the exact commands, package discovery, Go environment, host resources, raw test output, exit statuses, and diagnostic durations. They expire after one day. Download the artifacts before expiry. These are setup diagnostics, not warm-cache performance measurements or evidence of semantic-selection effectiveness.
+
+Validate the helpers offline without Docker or subject tests:
+
+```sh
+bash -n benchmark/qualification/worker.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmark/qualification -p 'test_*.py'
+```
+
 ## Benchmark results: kubernetes-sigs/kueue, 12 PRs (2026-09-18)
 
 **On this suite Jev cut the selected unit-test set from 60% (static) to 79% reduction with no recall loss, but the oracle found zero cross-package regressions, so recall does not yet separate the strategies.**

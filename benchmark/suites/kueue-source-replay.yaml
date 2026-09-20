@@ -1,0 +1,22 @@
+repo: github.com/kubernetes-sigs/kueue
+workdir: .bench/kueue-replay
+evaluation: source_replay
+source_files:
+  - pkg/workloadslicing/pods.go
+packages:
+  - ./pkg/workloadslicing
+  - ./pkg/controller/tas
+  - ./pkg/controller/core
+run_tests: true
+oracle: revert
+require_head_pass: true
+artifacts_dir: .bench/kueue-source-replay-2026-09-19-artifacts
+test_timeout: 10m
+test_args: [-p=1, -ldflags=-linkmode=internal]
+strategies: [full, changed, static, jevci, jevci:no-direct]
+config: kueue.jevci.yaml
+prs:
+  - number: 15365
+    head: 9e129797ba50bec728e7459d76c70e94b54e2f33
+    base: 6c04e3dd3e52aa5ad89791c786ac904789e0dae0
+    title: "Controlled source-only replay: workload-slice field selectors"
